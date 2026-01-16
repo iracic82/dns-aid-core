@@ -1,4 +1,4 @@
-# DNS-AID
+# DNS-AID Core Library
 
 **DNS-based Agent Identification and Discovery**
 
@@ -6,26 +6,43 @@ Reference implementation for [IETF draft-mozleywilliams-dnsop-bandaid-02](https:
 
 DNS-AID enables AI agents to discover each other via DNS, using the internet's existing naming infrastructure instead of centralized registries or hardcoded URLs.
 
+> **📦 Partner Distribution**
+> This is the **core library** distribution of DNS-AID, provided to partners for testing and integration. It contains the Python library, CLI, MCP server, and DNS backends (Cloudflare, BIND/DDNS, Route53, Infoblox). Server-side components (Agent Directory API, crawlers, infrastructure) are maintained in a separate private repository.
+
 > **New to DNS-AID?** Check out the [Getting Started Guide](docs/getting-started.md) for step-by-step setup and testing instructions.
 
-## Quick Start
+## Installation
+
+### From GitHub Release (Recommended)
 
 ```bash
-# Basic installation
-pip install dns-aid
+# Install wheel directly from GitHub release
+pip install https://github.com/iracic82/dns-aid-core/releases/download/v0.3.1/dns_aid-0.3.1-py3-none-any.whl
 
 # With CLI support
-pip install dns-aid[cli]
+pip install "dns-aid[cli] @ https://github.com/iracic82/dns-aid-core/releases/download/v0.3.1/dns_aid-0.3.1-py3-none-any.whl"
 
-# With MCP server for AI agents
-pip install dns-aid[mcp]
-
-# With Route 53 backend
-pip install dns-aid[route53]
-
-# Everything
-pip install dns-aid[all]
+# With all features (CLI + MCP + Route53)
+pip install "dns-aid[all] @ https://github.com/iracic82/dns-aid-core/releases/download/v0.3.1/dns_aid-0.3.1-py3-none-any.whl"
 ```
+
+### From Source
+
+```bash
+# Clone and install
+git clone https://github.com/iracic82/dns-aid-core.git
+cd dns-aid-core
+pip install -e ".[cli]"
+```
+
+### Optional Dependencies
+
+| Extra | Description |
+|-------|-------------|
+| `cli` | Command-line interface (`dns-aid` command) |
+| `mcp` | MCP server for AI agent integration |
+| `route53` | AWS Route 53 backend |
+| `all` | Everything above |
 
 ### Python Library
 
