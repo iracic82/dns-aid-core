@@ -1,0 +1,198 @@
+"""
+DNS-AID Publisher: Create DNS records for AI agent discovery.
+
+This module handles publishing agents to DNS using SVCB and TXT records
+as specified in IETF draft-mozleywilliams-dnsop-bandaid-02.
+"""
+
+from __future__ import annotations
+
+import structlog
+
+from dns_aid.backends.base import DNSBackend
+from dns_aid.backends.mock import MockBackend
+from dns_aid.core.models import AgentRecord, Protocol, PublishResult
+
+logger = structlog.get_logger(__name__)
+
+# Global default backend (can be overridden)
+_default_backend: DNSBackend | None = None
+
+
+def set_default_backend(backend: DNSBackend) -> None:
+    """Set the default DNS backend for publish operations."""
+    global _default_backend
+    _default_backend = backend
+
+
+def get_default_backend() -> DNSBackend:
+    """Get the default DNS backend, creating mock if not set."""
+    global _default_backend
+    if _default_backend is None:
+        _default_backend = MockBackend()
+    return _default_backend
+
+
+async def publish(
+    name: str,
+    domain: str,
+    protocol: str | Protocol,
+    endpoint: str,
+    port: int = 443,
+    capabilities: list[str] | None = None,
+    version: str = "1.0.0",
+    description: str | None = None,
+    ttl: int = 3600,
+    backend: DNSBackend | None = None,
+) -> PublishResult:
+    """
+    Publish an AI agent to DNS using DNS-AID protocol.
+
+    Creates SVCB and TXT records that allow other agents to discover
+    this agent via DNS queries.
+
+    Args:
+        name: Agent identifier (e.g., "chat", "network-specialist")
+        domain: Domain to publish under (e.g., "example.com")
+        protocol: Communication protocol ("a2a", "mcp", or Protocol enum)
+        endpoint: Hostname where agent is reachable
+        port: Port number (default: 443)
+        capabilities: List of agent capabilities
+        version: Agent version string
+        description: Human-readable description
+        ttl: DNS record TTL in seconds
+        backend: DNS backend to use (defaults to global backend)
+
+    Returns:
+        PublishResult with created records
+
+    Example:
+        >>> result = await publish(
+        ...     name="network-specialist",
+        ...     domain="example.com",
+        ...     protocol="mcp",
+        ...     endpoint="mcp.example.com",
+        ...     capabilities=["ipam", "dns", "vpn"]
+        ... )
+        >>> print(result.agent.fqdn)
+        '_network-specialist._mcp._agents.example.com'
+    """
+    # Normalize protocol to enum
+    if isinstance(protocol, str):
+        protocol = Protocol(protocol.lower())
+
+    # Create agent record
+    agent = AgentRecord(
+        name=name,
+        domain=domain,
+        protocol=protocol,
+        target_host=endpoint,
+        port=port,
+        capabilities=capabilities or [],
+        version=version,
+        description=description,
+        ttl=ttl,
+    )
+
+    # Get backend
+    dns_backend = backend or get_default_backend()
+
+    logger.info(
+        "Publishing agent to DNS",
+        agent_name=agent.name,
+        domain=agent.domain,
+        protocol=agent.protocol.value,
+        fqdn=agent.fqdn,
+        backend=dns_backend.name,
+    )
+
+    # Check zone exists
+    if not await dns_backend.zone_exists(domain):
+        logger.error("Zone does not exist", zone=domain)
+        return PublishResult(
+            agent=agent,
+            records_created=[],
+            zone=domain,
+            backend=dns_backend.name,
+            success=False,
+            message=f"Zone '{domain}' does not exist or is not accessible",
+        )
+
+    try:
+        # Create DNS records
+        records = await dns_backend.publish_agent(agent)
+
+        logger.info(
+            "Agent published successfully",
+            fqdn=agent.fqdn,
+            records=records,
+        )
+
+        return PublishResult(
+            agent=agent,
+            records_created=records,
+            zone=domain,
+            backend=dns_backend.name,
+            success=True,
+            message="Agent published successfully",
+        )
+
+    except Exception as e:
+        logger.exception("Failed to publish agent", error=str(e))
+        return PublishResult(
+            agent=agent,
+            records_created=[],
+            zone=domain,
+            backend=dns_backend.name,
+            success=False,
+            message=f"Failed to publish: {e}",
+        )
+
+
+async def unpublish(
+    name: str,
+    domain: str,
+    protocol: str | Protocol,
+    backend: DNSBackend | None = None,
+) -> bool:
+    """
+    Remove an agent from DNS.
+
+    Deletes both SVCB and TXT records for the agent.
+
+    Args:
+        name: Agent identifier
+        domain: Domain where agent is published
+        protocol: Communication protocol
+        backend: DNS backend to use
+
+    Returns:
+        True if records were deleted
+    """
+    # Normalize protocol
+    if isinstance(protocol, str):
+        protocol = Protocol(protocol.lower())
+
+    dns_backend = backend or get_default_backend()
+
+    record_name = f"_{name}._{protocol.value}._agents"
+
+    logger.info(
+        "Removing agent from DNS",
+        agent_name=name,
+        domain=domain,
+        record_name=record_name,
+    )
+
+    # Delete both record types
+    svcb_deleted = await dns_backend.delete_record(domain, record_name, "SVCB")
+    txt_deleted = await dns_backend.delete_record(domain, record_name, "TXT")
+
+    success = svcb_deleted or txt_deleted
+
+    if success:
+        logger.info("Agent removed from DNS", agent_name=name)
+    else:
+        logger.warning("No records found to delete", agent_name=name)
+
+    return success

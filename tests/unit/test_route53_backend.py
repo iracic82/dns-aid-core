@@ -1,0 +1,557 @@
+"""Tests for dns_aid.backends.route53 module."""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from dns_aid.backends.route53 import Route53Backend
+
+
+class TestRoute53BackendInit:
+    """Tests for Route53Backend initialization."""
+
+    def test_init_with_zone_id(self):
+        """Test initialization with zone ID."""
+        backend = Route53Backend(zone_id="Z0586652231EFJ5ITAAGP")
+        assert backend._zone_id == "Z0586652231EFJ5ITAAGP"
+
+    def test_init_with_credentials(self):
+        """Test initialization with AWS credentials."""
+        backend = Route53Backend(
+            zone_id="Z123",
+            region="us-west-2",
+            aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
+            aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        )
+        assert backend._region == "us-west-2"
+        assert backend._aws_access_key_id == "AKIAIOSFODNN7EXAMPLE"
+
+    def test_init_default_region(self):
+        """Test default region is us-east-1."""
+        backend = Route53Backend()
+        assert backend._region == "us-east-1"
+
+    def test_init_region_from_env(self):
+        """Test region from environment variable."""
+        with patch.dict("os.environ", {"AWS_REGION": "eu-west-1"}):
+            backend = Route53Backend()
+            assert backend._region == "eu-west-1"
+
+
+class TestRoute53BackendProperties:
+    """Tests for Route53Backend properties."""
+
+    def test_name_property(self):
+        """Test name property returns 'route53'."""
+        backend = Route53Backend()
+        assert backend.name == "route53"
+
+
+class TestRoute53BackendClient:
+    """Tests for boto3 client creation."""
+
+    def test_get_client_creates_client(self):
+        """Test that _get_client creates boto3 client."""
+        backend = Route53Backend(zone_id="Z123")
+
+        with patch("boto3.client") as mock_boto:
+            mock_client = MagicMock()
+            mock_boto.return_value = mock_client
+
+            client = backend._get_client()
+
+            mock_boto.assert_called_once_with("route53", region_name="us-east-1")
+            assert client == mock_client
+
+    def test_get_client_caches_client(self):
+        """Test that client is cached."""
+        backend = Route53Backend(zone_id="Z123")
+
+        with patch("boto3.client") as mock_boto:
+            mock_client = MagicMock()
+            mock_boto.return_value = mock_client
+
+            client1 = backend._get_client()
+            client2 = backend._get_client()
+
+            # Should only create once
+            mock_boto.assert_called_once()
+            assert client1 is client2
+
+    def test_get_client_with_credentials(self):
+        """Test client creation with explicit credentials."""
+        backend = Route53Backend(
+            zone_id="Z123",
+            aws_access_key_id="AKIATEST",
+            aws_secret_access_key="secretkey",
+        )
+
+        with patch("boto3.client") as mock_boto:
+            mock_client = MagicMock()
+            mock_boto.return_value = mock_client
+
+            backend._get_client()
+
+            mock_boto.assert_called_once_with(
+                "route53",
+                region_name="us-east-1",
+                aws_access_key_id="AKIATEST",
+                aws_secret_access_key="secretkey",
+            )
+
+
+class TestRoute53BackendZoneId:
+    """Tests for zone ID resolution."""
+
+    @pytest.mark.asyncio
+    async def test_get_zone_id_returns_configured(self):
+        """Test that configured zone ID is returned."""
+        backend = Route53Backend(zone_id="Z123CONFIGURED")
+        zone_id = await backend._get_zone_id("example.com")
+        assert zone_id == "Z123CONFIGURED"
+
+    @pytest.mark.asyncio
+    async def test_get_zone_id_from_cache(self):
+        """Test that cached zone ID is returned."""
+        backend = Route53Backend()
+        backend._zone_cache["example.com"] = "ZCACHED"
+
+        zone_id = await backend._get_zone_id("example.com")
+        assert zone_id == "ZCACHED"
+
+    @pytest.mark.asyncio
+    async def test_get_zone_id_from_api(self):
+        """Test zone ID lookup from API."""
+        backend = Route53Backend()
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {
+                "HostedZones": [
+                    {"Id": "/hostedzone/Z123", "Name": "other.com."},
+                    {"Id": "/hostedzone/ZFOUND", "Name": "example.com."},
+                ]
+            }
+        ]
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            zone_id = await backend._get_zone_id("example.com")
+            assert zone_id == "ZFOUND"
+
+    @pytest.mark.asyncio
+    async def test_get_zone_id_not_found(self):
+        """Test zone ID lookup when zone doesn't exist."""
+        backend = Route53Backend()
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {"HostedZones": [{"Id": "/hostedzone/Z123", "Name": "other.com."}]}
+        ]
+
+        with (
+            patch.object(backend, "_get_client", return_value=mock_client),
+            pytest.raises(ValueError, match="No hosted zone found"),
+        ):
+            await backend._get_zone_id("notfound.com")
+
+
+class TestRoute53BackendFormatSvcb:
+    """Tests for SVCB value formatting."""
+
+    def test_format_svcb_value_basic(self):
+        """Test basic SVCB value formatting."""
+        backend = Route53Backend()
+        value = backend._format_svcb_value(
+            priority=1,
+            target="chat.example.com",
+            params={"alpn": "a2a", "port": "443"},
+        )
+        assert value.startswith("1 chat.example.com.")
+        assert 'alpn="a2a"' in value
+        assert 'port="443"' in value
+
+    def test_format_svcb_value_adds_trailing_dot(self):
+        """Test that trailing dot is added to target."""
+        backend = Route53Backend()
+        value = backend._format_svcb_value(
+            priority=1,
+            target="chat.example.com",
+            params={},
+        )
+        assert "chat.example.com." in value
+
+    def test_format_svcb_value_no_params(self):
+        """Test SVCB value with no params."""
+        backend = Route53Backend()
+        value = backend._format_svcb_value(
+            priority=0,
+            target="alias.example.com.",
+            params={},
+        )
+        assert value == "0 alias.example.com."
+
+
+class TestRoute53BackendCreateSvcb:
+    """Tests for SVCB record creation."""
+
+    @pytest.mark.asyncio
+    async def test_create_svcb_record_success(self):
+        """Test successful SVCB record creation."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.change_resource_record_sets.return_value = {
+            "ChangeInfo": {"Id": "/change/CHANGE123"}
+        }
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            result = await backend.create_svcb_record(
+                zone="example.com",
+                name="_chat._a2a._agents",
+                priority=1,
+                target="chat.example.com",
+                params={"alpn": "a2a", "port": "443"},
+                ttl=3600,
+            )
+
+            assert result == "_chat._a2a._agents.example.com"
+            mock_client.change_resource_record_sets.assert_called_once()
+
+
+class TestRoute53BackendCreateTxt:
+    """Tests for TXT record creation."""
+
+    @pytest.mark.asyncio
+    async def test_create_txt_record_success(self):
+        """Test successful TXT record creation."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.change_resource_record_sets.return_value = {
+            "ChangeInfo": {"Id": "/change/CHANGE456"}
+        }
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            result = await backend.create_txt_record(
+                zone="example.com",
+                name="_chat._a2a._agents",
+                values=["capabilities=chat,code", "version=1.0.0"],
+                ttl=3600,
+            )
+
+            assert result == "_chat._a2a._agents.example.com"
+
+
+class TestRoute53BackendDeleteRecord:
+    """Tests for record deletion."""
+
+    @pytest.mark.asyncio
+    async def test_delete_record_success(self):
+        """Test successful record deletion."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.list_resource_record_sets.return_value = {
+            "ResourceRecordSets": [
+                {
+                    "Name": "_chat._a2a._agents.example.com.",
+                    "Type": "SVCB",
+                    "TTL": 3600,
+                    "ResourceRecords": [{"Value": "1 chat.example.com."}],
+                }
+            ]
+        }
+        mock_client.change_resource_record_sets.return_value = {
+            "ChangeInfo": {"Id": "/change/DEL123"}
+        }
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            result = await backend.delete_record(
+                zone="example.com",
+                name="_chat._a2a._agents",
+                record_type="SVCB",
+            )
+
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_delete_record_not_found(self):
+        """Test deletion when record doesn't exist."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.list_resource_record_sets.return_value = {"ResourceRecordSets": []}
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            result = await backend.delete_record(
+                zone="example.com",
+                name="_nonexistent._agents",
+                record_type="SVCB",
+            )
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_delete_record_mismatch(self):
+        """Test deletion when record name/type doesn't match."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.list_resource_record_sets.return_value = {
+            "ResourceRecordSets": [
+                {
+                    "Name": "_other._agents.example.com.",
+                    "Type": "TXT",
+                    "TTL": 3600,
+                    "ResourceRecords": [],
+                }
+            ]
+        }
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            result = await backend.delete_record(
+                zone="example.com",
+                name="_chat._agents",
+                record_type="SVCB",
+            )
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_delete_record_exception(self):
+        """Test deletion with exception."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.list_resource_record_sets.side_effect = Exception("AWS Error")
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            result = await backend.delete_record(
+                zone="example.com",
+                name="_chat._agents",
+                record_type="SVCB",
+            )
+
+            assert result is False
+
+
+class TestRoute53BackendListRecords:
+    """Tests for record listing."""
+
+    @pytest.mark.asyncio
+    async def test_list_records_all(self):
+        """Test listing all records."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {
+                "ResourceRecordSets": [
+                    {
+                        "Name": "_chat._agents.example.com.",
+                        "Type": "SVCB",
+                        "TTL": 3600,
+                        "ResourceRecords": [{"Value": "1 chat.example.com."}],
+                    },
+                    {
+                        "Name": "_chat._agents.example.com.",
+                        "Type": "TXT",
+                        "TTL": 3600,
+                        "ResourceRecords": [{"Value": '"capabilities=chat"'}],
+                    },
+                ]
+            }
+        ]
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            records = []
+            async for record in backend.list_records(zone="example.com"):
+                records.append(record)
+
+            assert len(records) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_records_filter_by_name(self):
+        """Test listing records filtered by name."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {
+                "ResourceRecordSets": [
+                    {
+                        "Name": "_chat._agents.example.com.",
+                        "Type": "SVCB",
+                        "TTL": 3600,
+                        "ResourceRecords": [],
+                    },
+                    {
+                        "Name": "_other.example.com.",
+                        "Type": "A",
+                        "TTL": 300,
+                        "ResourceRecords": [],
+                    },
+                ]
+            }
+        ]
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            records = []
+            async for record in backend.list_records(zone="example.com", name_pattern="_agents"):
+                records.append(record)
+
+            assert len(records) == 1
+            assert "_agents" in records[0]["fqdn"]
+
+    @pytest.mark.asyncio
+    async def test_list_records_filter_by_type(self):
+        """Test listing records filtered by type."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {
+                "ResourceRecordSets": [
+                    {
+                        "Name": "_chat._agents.example.com.",
+                        "Type": "SVCB",
+                        "TTL": 3600,
+                        "ResourceRecords": [],
+                    },
+                    {
+                        "Name": "_chat._agents.example.com.",
+                        "Type": "TXT",
+                        "TTL": 3600,
+                        "ResourceRecords": [],
+                    },
+                ]
+            }
+        ]
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            records = []
+            async for record in backend.list_records(zone="example.com", record_type="SVCB"):
+                records.append(record)
+
+            assert len(records) == 1
+            assert records[0]["type"] == "SVCB"
+
+
+class TestRoute53BackendZoneExists:
+    """Tests for zone existence check."""
+
+    @pytest.mark.asyncio
+    async def test_zone_exists_true(self):
+        """Test zone exists returns True."""
+        backend = Route53Backend(zone_id="Z123")
+        result = await backend.zone_exists("example.com")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_zone_exists_false(self):
+        """Test zone exists returns False when not found."""
+        backend = Route53Backend()
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [{"HostedZones": []}]
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            result = await backend.zone_exists("notfound.com")
+            assert result is False
+
+
+class TestRoute53BackendListZones:
+    """Tests for listing zones."""
+
+    @pytest.mark.asyncio
+    async def test_list_zones(self):
+        """Test listing all zones."""
+        backend = Route53Backend()
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {
+                "HostedZones": [
+                    {
+                        "Id": "/hostedzone/Z123",
+                        "Name": "example.com.",
+                        "ResourceRecordSetCount": 10,
+                        "Config": {"PrivateZone": False},
+                    },
+                    {
+                        "Id": "/hostedzone/Z456",
+                        "Name": "private.local.",
+                        "ResourceRecordSetCount": 5,
+                        "Config": {"PrivateZone": True},
+                    },
+                ]
+            }
+        ]
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            zones = await backend.list_zones()
+
+            assert len(zones) == 2
+            assert zones[0]["id"] == "Z123"
+            assert zones[0]["name"] == "example.com"
+            assert zones[0]["private"] is False
+            assert zones[1]["private"] is True
+
+
+class TestRoute53BackendChangeStatus:
+    """Tests for change status operations."""
+
+    @pytest.mark.asyncio
+    async def test_get_change_status(self):
+        """Test getting change status."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.get_change.return_value = {"ChangeInfo": {"Status": "INSYNC"}}
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            status = await backend.get_change_status("/change/C123")
+            assert status == "INSYNC"
+
+    @pytest.mark.asyncio
+    async def test_wait_for_change_success(self):
+        """Test waiting for change completion."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.get_change.return_value = {"ChangeInfo": {"Status": "INSYNC"}}
+
+        with patch.object(backend, "_get_client", return_value=mock_client):
+            result = await backend.wait_for_change("/change/C123", max_wait=5)
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_wait_for_change_timeout(self):
+        """Test waiting for change timeout."""
+        backend = Route53Backend(zone_id="Z123")
+
+        mock_client = MagicMock()
+        mock_client.get_change.return_value = {"ChangeInfo": {"Status": "PENDING"}}
+
+        with (
+            patch.object(backend, "_get_client", return_value=mock_client),
+            patch("asyncio.sleep", return_value=None),
+        ):
+            result = await backend.wait_for_change("/change/C123", max_wait=2)
+            assert result is False

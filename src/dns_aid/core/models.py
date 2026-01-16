@@ -1,0 +1,234 @@
+"""
+Data models for DNS-AID.
+
+These models represent agents, discovery results, and DNS records
+as specified in IETF draft-mozleywilliams-dnsop-bandaid-02.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class Protocol(str, Enum):
+    """
+    Supported agent communication protocols.
+
+    Per IETF draft, these map to ALPN identifiers in SVCB records.
+    """
+
+    A2A = "a2a"  # Agent-to-Agent (Google's protocol)
+    MCP = "mcp"  # Model Context Protocol (Anthropic's protocol)
+    HTTPS = "https"  # Standard HTTPS
+
+
+class AgentRecord(BaseModel):
+    """
+    Represents an AI agent published via DNS-AID.
+
+    Maps to SVCB + TXT records in DNS per the BANDAID specification:
+    - SVCB: _{name}._{protocol}._agents.{domain} → service binding
+    - TXT: capabilities, version, metadata
+
+    Example:
+        >>> agent = AgentRecord(
+        ...     name="network-specialist",
+        ...     domain="example.com",
+        ...     protocol=Protocol.MCP,
+        ...     target_host="mcp.example.com",
+        ...     capabilities=["ipam", "dns", "vpn"]
+        ... )
+        >>> agent.fqdn
+        '_network-specialist._mcp._agents.example.com'
+        >>> agent.endpoint_url
+        'https://mcp.example.com:443'
+    """
+
+    # Identity
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=63,
+        pattern=r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+        description="Agent identifier (DNS label format, e.g., 'chat', 'network-specialist')",
+    )
+    domain: str = Field(
+        ..., min_length=1, description="Domain where agent is published (e.g., 'example.com')"
+    )
+    protocol: Protocol = Field(..., description="Communication protocol (a2a, mcp, https)")
+
+    # Endpoint
+    target_host: str = Field(..., min_length=1, description="Hostname where agent is reachable")
+    port: int = Field(default=443, ge=1, le=65535, description="Port number")
+    ipv4_hint: str | None = Field(default=None, description="IPv4 address hint for performance")
+    ipv6_hint: str | None = Field(default=None, description="IPv6 address hint for performance")
+
+    # Metadata
+    capabilities: list[str] = Field(default_factory=list, description="List of agent capabilities")
+    version: str = Field(default="1.0.0", description="Agent version")
+    description: str | None = Field(default=None, description="Human-readable description")
+
+    # DNS settings
+    ttl: int = Field(default=3600, ge=60, le=86400, description="Time-to-live in seconds")
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Ensure name is lowercase (DNS is case-insensitive)."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, v: str) -> str:
+        """Normalize domain to lowercase without trailing dot."""
+        return v.lower().rstrip(".")
+
+    @property
+    def fqdn(self) -> str:
+        """
+        Fully qualified domain name for DNS-AID record.
+
+        Format: _{name}._{protocol}._agents.{domain}
+        Per IETF draft section 3.1
+        """
+        return f"_{self.name}._{self.protocol.value}._agents.{self.domain}"
+
+    @property
+    def endpoint_url(self) -> str:
+        """Full URL to reach the agent."""
+        return f"https://{self.target_host}:{self.port}"
+
+    @property
+    def svcb_target(self) -> str:
+        """Target for SVCB record (with trailing dot)."""
+        return f"{self.target_host}."
+
+    def to_svcb_params(self) -> dict[str, str]:
+        """
+        Generate SVCB parameters for DNS record.
+
+        Returns dict suitable for creating SVCB record.
+        Per BANDAID draft, includes mandatory parameter to indicate
+        required params for agent discovery.
+        """
+        params = {
+            "alpn": self.protocol.value,
+            "port": str(self.port),
+            # BANDAID compliance: indicate alpn and port are mandatory
+            "mandatory": "alpn,port",
+        }
+        if self.ipv4_hint:
+            params["ipv4hint"] = self.ipv4_hint
+        if self.ipv6_hint:
+            params["ipv6hint"] = self.ipv6_hint
+        return params
+
+    def to_txt_values(self) -> list[str]:
+        """
+        Generate TXT record values for capabilities/metadata.
+
+        Returns list of strings for TXT record.
+        """
+        values = []
+        if self.capabilities:
+            values.append(f"capabilities={','.join(self.capabilities)}")
+        values.append(f"version={self.version}")
+        if self.description:
+            values.append(f"description={self.description}")
+        return values
+
+
+class DiscoveryResult(BaseModel):
+    """
+    Result of a DNS-AID discovery query.
+
+    Contains discovered agents and metadata about the query.
+    """
+
+    query: str = Field(..., description="The DNS query made")
+    domain: str = Field(..., description="Domain that was queried")
+    agents: list[AgentRecord] = Field(default_factory=list, description="Discovered agents")
+    dnssec_validated: bool = Field(default=False, description="Whether DNSSEC was verified")
+    cached: bool = Field(default=False, description="Whether result was from cache")
+    query_time_ms: float = Field(default=0.0, description="Query latency in milliseconds")
+
+    @property
+    def count(self) -> int:
+        """Number of agents discovered."""
+        return len(self.agents)
+
+
+class PublishResult(BaseModel):
+    """
+    Result of publishing an agent to DNS.
+
+    Contains the published agent and created DNS records.
+    """
+
+    agent: AgentRecord = Field(..., description="The published agent")
+    records_created: list[str] = Field(default_factory=list, description="DNS records created")
+    zone: str = Field(..., description="DNS zone used")
+    backend: str = Field(..., description="DNS backend used")
+    success: bool = Field(default=True, description="Whether publish succeeded")
+    message: str | None = Field(default=None, description="Status message")
+
+
+class VerifyResult(BaseModel):
+    """
+    Result of verifying an agent's DNS records.
+
+    Contains security validation results.
+    """
+
+    fqdn: str = Field(..., description="FQDN that was verified")
+    record_exists: bool = Field(default=False, description="DNS record exists")
+    svcb_valid: bool = Field(default=False, description="SVCB record is valid")
+    dnssec_valid: bool = Field(default=False, description="DNSSEC chain validated")
+    dane_valid: bool | None = Field(
+        default=None, description="DANE/TLSA verified (None if not configured)"
+    )
+    endpoint_reachable: bool = Field(default=False, description="Endpoint responds")
+    endpoint_latency_ms: float | None = Field(default=None, description="Endpoint response time")
+
+    @property
+    def security_score(self) -> int:
+        """
+        Calculate security score (0-100).
+
+        Scoring:
+        - Record exists: 20 points
+        - SVCB valid: 20 points
+        - DNSSEC valid: 30 points
+        - DANE valid: 15 points
+        - Endpoint reachable: 15 points
+        """
+        score = 0
+        if self.record_exists:
+            score += 20
+        if self.svcb_valid:
+            score += 20
+        if self.dnssec_valid:
+            score += 30
+        if self.dane_valid:
+            score += 15
+        if self.endpoint_reachable:
+            score += 15
+        return score
+
+    @property
+    def security_rating(self) -> Literal["Excellent", "Good", "Fair", "Poor"]:
+        """Human-readable security rating."""
+        score = self.security_score
+        if score >= 85:
+            return "Excellent"
+        elif score >= 70:
+            return "Good"
+        elif score >= 50:
+            return "Fair"
+        else:
+            return "Poor"

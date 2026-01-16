@@ -1,0 +1,130 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dns-aid"
+version = "0.3.1"
+description = "DNS-based Agent Identification and Discovery - Reference Implementation"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [
+    { name = "DNS-AID Contributors" }
+]
+keywords = [
+    "dns",
+    "agent",
+    "discovery",
+    "mcp",
+    "a2a",
+    "ai",
+    "svcb",
+    "dnssec"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: Name Service (DNS)",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "dnspython>=2.6.0",
+    "pydantic>=2.5.0",
+    "httpx>=0.27.0",
+    "structlog>=24.0.0",
+]
+
+[project.optional-dependencies]
+cli = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+    "uvicorn>=0.30.0",
+]
+route53 = [
+    "boto3>=1.34.0",
+]
+infoblox = [
+    # Uses httpx from core deps
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "mypy>=1.8.0",
+    "ruff>=0.3.0",
+    "boto3-stubs[route53]>=1.34.0",
+]
+all = [
+    # CLI
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    # MCP
+    "mcp>=1.0.0",
+    "uvicorn>=0.30.0",
+    # Route53
+    "boto3>=1.34.0",
+    # Dev
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "mypy>=1.8.0",
+    "ruff>=0.3.0",
+    "boto3-stubs[route53]>=1.34.0",
+]
+
+[project.scripts]
+dns-aid = "dns_aid.cli.main:app"
+dns-aid-mcp = "dns_aid.mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/iracic82/dns-aid-core"
+Documentation = "https://github.com/iracic82/dns-aid-core#readme"
+Repository = "https://github.com/iracic82/dns-aid-core"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dns_aid"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+no_strict_optional = true
+allow_untyped_defs = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501", "SIM108"]  # SIM108: if-else vs ternary is a style preference
+
+[tool.ruff.lint.per-file-ignores]
+# Tests often use nested with statements for mocking and uppercase mock variable names
+"tests/**/*.py" = ["SIM117", "N806"]
+
+[tool.coverage.run]
+source = ["src/dns_aid"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

@@ -1,0 +1,29 @@
+"""Utility functions: logging, config, helpers, validation."""
+
+from dns_aid.utils.validation import (
+    ValidationError,
+    validate_agent_name,
+    validate_backend,
+    validate_capabilities,
+    validate_domain,
+    validate_endpoint,
+    validate_fqdn,
+    validate_port,
+    validate_protocol,
+    validate_ttl,
+    validate_version,
+)
+
+__all__ = [
+    "ValidationError",
+    "validate_agent_name",
+    "validate_backend",
+    "validate_capabilities",
+    "validate_domain",
+    "validate_endpoint",
+    "validate_fqdn",
+    "validate_port",
+    "validate_protocol",
+    "validate_ttl",
+    "validate_version",
+]
