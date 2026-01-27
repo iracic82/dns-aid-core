@@ -60,6 +60,9 @@ jobs:
           pip install ".[dev,cli,mcp,route53]"
           pip install pip-audit
 
+      - name: Generate requirements for audit
+        # Export only third-party deps (exclude dns-aid which isn't on PyPI yet)
+        run: pip freeze | grep -v "^dns-aid==" > requirements-audit.txt
+
       - name: Run pip-audit
-        # Exclude dns-aid itself (not yet on PyPI, installed from source)
-        run: pip-audit --strict --exclude dns-aid
+        run: pip-audit --strict -r requirements-audit.txt
