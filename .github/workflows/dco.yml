@@ -21,4 +21,4 @@ jobs:
       - name: Check DCO sign-off
         uses: KineticCafe/actions-dco@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
