@@ -2,7 +2,7 @@
 
 This guide walks through demonstrating DNS-AID's end-to-end agent discovery capabilities. Perfect for conference calls, IETF presentations, and Linux Foundation demos.
 
-> **Version 0.4.8** - BANDAID custom SVCB parameters (cap, cap-sha256, bap, policy, realm), capability document fetching, and discovery source transparency!
+> **Version 0.7.0** - Python Kubernetes Controller for auto-publishing agents, JWS signatures for application-layer verification, plus all v0.6.0 features: community rankings, LangGraph Studio integration, and Tier 1 Execution Telemetry SDK.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ Run these checks before starting your demo:
 ```bash
 # 1. DNS-AID installed?
 dns-aid --version
-# Expected: dns-aid, version 0.4.8
+# Expected: dns-aid, version 0.7.0
 
 # 2. AWS credentials configured?
 aws sts get-caller-identity
@@ -607,7 +607,140 @@ python e2e_demo.py
 
 ---
 
-## Demo 4: MCP Agent Proxying (v0.4.2+)
+## Demo 4: Agent Directory Pipeline (Phase 2)
+
+This demo tests the full crawler pipeline deployed to AWS: publish → index → crawl → discover.
+
+### Prerequisites
+
+- AWS credentials with access to `eu-west-2`
+- AWS profile: `okta-sso` (or default)
+- DNS-AID CLI installed
+
+### Step 1: Publish an Agent
+
+```bash
+dns-aid publish \
+  --name network-assistant \
+  --domain highvelocitynetworking.com \
+  --protocol mcp \
+  --endpoint mcp.highvelocitynetworking.com \
+  --capability network \
+  --capability dns \
+  --ttl 300
+```
+
+### Step 2: Verify Index Record (Auto-Created)
+
+**New in v0.3.0:** The index is automatically created when you publish. Verify it:
+
+```bash
+dns-aid index list highvelocitynetworking.com
+
+# Expected output:
+# Agent index for highvelocitynetworking.com:
+#
+# ┌───────────────────┬──────────┬─────────────────────────────────────────────┐
+# │ Name              │ Protocol │ FQDN                                        │
+# ├───────────────────┼──────────┼─────────────────────────────────────────────┤
+# │ network-assistant │ mcp      │ _network-assistant._mcp._agents.highvelo... │
+# └───────────────────┴──────────┴─────────────────────────────────────────────┘
+#
+# Total: 1 agent(s) in index
+```
+
+> **Note:** The crawler reads `_index._agents.{domain}` for efficient discovery (single DNS query returns all agents).
+
+**Alternative: Sync existing agents to index**
+
+If you have existing agents without an index, sync them:
+
+```bash
+dns-aid index sync highvelocitynetworking.com
+# Scans DNS for all _agents.* records and rebuilds the index
+```
+
+### Step 3: Submit & Verify Domain (Triggers Auto-Crawl)
+
+**New in v1.2.0:** Verification automatically triggers crawling - no manual SQS needed!
+
+```bash
+# Submit domain to directory
+curl -X POST https://api.velosecurity-ai.io/api/v1/domains/submit \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "highvelocitynetworking.com"}'
+
+# Create verification TXT record (if not already done)
+# _dns-aid-verify.highvelocitynetworking.com TXT "<token>"
+
+# Verify domain - THIS TRIGGERS AUTO-CRAWL
+curl -X POST https://api.velosecurity-ai.io/api/v1/domains/verify \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "highvelocitynetworking.com"}'
+
+# Response shows auto-crawl was queued:
+# {"domain": "highvelocitynetworking.com", "verified": true,
+#  "message": "Domain verified successfully! Crawl job queued - your agents will be indexed shortly."}
+```
+
+**Alternative: Manual SQS (for testing/re-crawling)**
+
+```bash
+aws sqs send-message \
+  --queue-url https://sqs.eu-west-2.amazonaws.com/905418046272/dns-aid-dev-crawl-jobs \
+  --message-body '{"domain": "highvelocitynetworking.com", "source": "manual"}' \
+  --profile okta-sso --region eu-west-2
+```
+
+### Step 4: Watch Crawler Lambda Logs
+
+```bash
+aws logs tail /aws/lambda/dns-aid-dev-crawler --follow \
+  --profile okta-sso --region eu-west-2
+```
+
+Expected output:
+```
+Index record parsed            agent_count=1
+Discovering agent from index   name=network-assistant protocol=mcp
+Discovery complete             agents_found=1 time_ms=24.94
+SVCB record found              target=mcp.highvelocitynetworking.com port=443
+Verification complete          rating=Poor score=40
+Agent discovered via index     fqdn=_network-assistant._mcp._agents.highvelocitynetworking.com
+
+Crawler batch complete         succeeded=1 failed=0
+```
+
+### Step 5: Verify Discovery
+
+```bash
+# Check SVCB record exists
+dig _network-assistant._mcp._agents.highvelocitynetworking.com SVCB +short
+
+# Check security score via CLI
+dns-aid verify _network-assistant._mcp._agents.highvelocitynetworking.com
+```
+
+### Cleanup
+
+```bash
+# Delete the agent records (automatically removes from index)
+dns-aid delete \
+  --name network-assistant \
+  --domain highvelocitynetworking.com \
+  --protocol mcp \
+  --force
+
+# Expected output:
+# ✓ Agent deleted successfully
+# ✓ Updated index at _index._agents.highvelocitynetworking.com (0 agent(s))
+```
+
+> **Note:** In v0.3.0+, the delete command automatically updates the index. No manual cleanup needed!
+
+---
+
+## Demo 5: MCP Agent Proxying (v0.4.2+)
 
 This demo shows the new MCP agent proxying feature: discover an agent and call its tools directly through Claude Desktop.
 
@@ -894,3 +1027,274 @@ Found 1 agent(s):
 - ngrok free tier shows a browser warning page by default
 - Add `-H "ngrok-skip-browser-warning: true"` to all curl commands
 - Example: `curl -H "ngrok-skip-browser-warning: true" https://abc123.ngrok-free.app/health`
+
+---
+
+## Demo 6: Kubernetes Controller (v0.7.0+)
+
+The Python K8s Controller auto-publishes agents based on Service annotations. Uses idempotent reconciliation for GitOps workflows.
+
+### Prerequisites
+
+- Kubernetes cluster (minikube, kind, or real cluster)
+- kubectl configured
+- DNS-AID K8s package: `pip install -e ".[k8s]"`
+
+### Step 1: Configure Backend
+
+```bash
+# Set your DNS backend
+export DNS_AID_BACKEND=route53  # or cloudflare, infoblox, ddns
+
+# Ensure AWS credentials are set (for Route53)
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+```
+
+### Step 2: Create Annotated Service
+
+```yaml
+# payment-agent.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-agent
+  namespace: default
+  annotations:
+    dns-aid.io/agent-name: "payment"
+    dns-aid.io/protocol: "mcp"
+    dns-aid.io/domain: "agents.example.com"
+    dns-aid.io/capabilities: "payment,invoice,refund"
+    dns-aid.io/version: "1.0.0"
+spec:
+  selector:
+    app: payment
+  ports:
+    - port: 443
+      targetPort: 8443
+  type: LoadBalancer
+```
+
+```bash
+kubectl apply -f payment-agent.yaml
+```
+
+### Step 3: Run the Controller
+
+```bash
+# Run controller (watches for annotated Services)
+kopf run src/dns_aid/k8s/controller.py --verbose
+
+# Or use the module directly
+python -m dns_aid.k8s.controller
+```
+
+### Step 4: Verify DNS Records
+
+```bash
+# Check Route53 (or your backend)
+dns-aid discover agents.example.com --protocol mcp
+
+# Expected output:
+# Found 1 agent(s):
+# - payment (MCP protocol)
+#   Endpoint: https://payment.agents.example.com:443
+```
+
+### Step 5: Test Idempotency
+
+```bash
+# Update the service annotation
+kubectl annotate service payment-agent \
+  dns-aid.io/capabilities="payment,invoice,refund,subscription" --overwrite
+
+# Controller detects drift and updates DNS
+# Logs show: "Drift detected, updating records"
+```
+
+### Step 6: Delete and Cleanup
+
+```bash
+# Delete the service
+kubectl delete service payment-agent
+
+# Controller removes DNS records (finalizer)
+# Logs show: "DNS records deleted successfully"
+```
+
+### Controller Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     KUBERNETES CLUSTER                          │
+│                                                                 │
+│  ┌─────────────────┐      ┌──────────────────────────────────┐ │
+│  │ Service/Ingress │      │    DNS-AID Controller (Python)   │ │
+│  │                 │      │                                  │ │
+│  │ annotations:    │─────▶│  Watch: Services, Ingresses      │ │
+│  │   dns-aid.io/   │      │    ↓                             │ │
+│  │   agent-name    │      │  Reconcile: compute desired      │ │
+│  │   protocol      │      │    ↓                             │ │
+│  │   capabilities  │      │  dns_aid.apply(desired_state)    │ │
+│  └─────────────────┘      │    ↓                             │ │
+│                           │  DNS Backend (Route53/CF/etc)    │ │
+│                           └──────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Annotations Reference
+
+| Annotation | Required | Description |
+|------------|----------|-------------|
+| `dns-aid.io/agent-name` | Yes | Agent name (e.g., `payment`) |
+| `dns-aid.io/protocol` | Yes | Protocol: `mcp`, `a2a`, `https` |
+| `dns-aid.io/domain` | Yes | DNS domain (e.g., `agents.example.com`) |
+| `dns-aid.io/endpoint` | No | Override endpoint (default: LoadBalancer IP/hostname) |
+| `dns-aid.io/port` | No | Override port (default: first service port) |
+| `dns-aid.io/capabilities` | No | Comma-separated capabilities |
+| `dns-aid.io/version` | No | Agent version |
+| `dns-aid.io/ttl` | No | DNS TTL in seconds (default: 300) |
+
+---
+
+## Demo 7: JWS Signatures (v0.7.0+)
+
+JWS (JSON Web Signature) provides application-layer verification when DNSSEC isn't available (~70% of domains).
+
+### Why JWS?
+
+- DNSSEC adoption is ~30% globally
+- Many enterprises can't enable DNSSEC due to legacy infrastructure
+- JWS provides cryptographic verification at the application layer
+
+### Step 1: Generate Keys
+
+```bash
+# Generate EC P-256 keypair
+dns-aid keys generate --output ./keys/
+
+# Output:
+# ✓ Generated keypair:
+#   Private key: ./keys/private.pem
+#   Public key: ./keys/public.pem
+```
+
+### Step 2: Export JWKS
+
+```bash
+# Export public keys as JWKS
+dns-aid keys export-jwks --output .well-known/dns-aid-jwks.json
+
+# Host this file at: https://example.com/.well-known/dns-aid-jwks.json
+```
+
+JWKS format:
+```json
+{
+  "keys": [
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "kid": "dns-aid-2026",
+      "use": "sig",
+      "x": "...",
+      "y": "..."
+    }
+  ]
+}
+```
+
+### Step 3: Publish with Signature
+
+```bash
+# Publish agent with JWS signature
+dns-aid publish \
+    --name payment \
+    --domain example.com \
+    --protocol mcp \
+    --endpoint mcp.example.com \
+    --sign \
+    --private-key ./keys/private.pem
+
+# Output:
+# ✓ Agent published with JWS signature!
+#   SVCB: ... sig="eyJhbGciOiJFUzI1NiIs..."
+```
+
+### Step 4: Discover with Verification
+
+```bash
+# Verify signature on discovery
+dns-aid discover example.com --verify-signature
+
+# Output (valid signature):
+# ✓ Signature verified for _payment._mcp._agents.example.com
+# Found 1 agent(s):
+# - payment (MCP protocol)
+#   Endpoint: https://mcp.example.com:443
+#   Signature: VALID ✓
+
+# Output (invalid/missing signature):
+# ⚠ Signature verification failed for _payment._mcp._agents.example.com
+#   Reason: No JWKS found at https://example.com/.well-known/dns-aid-jwks.json
+```
+
+### Verification Priority
+
+```
+1. DNSSEC available and valid? → Trust (strongest)
+2. No DNSSEC but JWS sig valid? → Trust (application-layer)
+3. Neither? → Warn but allow (strict mode rejects)
+```
+
+### Signed Payload Format
+
+The JWS payload contains canonical SVCB record data:
+
+```json
+{
+  "fqdn": "_payment._mcp._agents.example.com",
+  "target": "mcp.example.com",
+  "port": 443,
+  "alpn": "mcp",
+  "iat": 1707004800,
+  "exp": 1707091200
+}
+```
+
+### Python SDK Usage
+
+```python
+from dns_aid.core.jws import generate_keypair, sign_record, verify_signature
+
+# Generate keys
+private_key, public_key = generate_keypair()
+
+# Sign a record
+signature = sign_record(
+    private_key=private_key,
+    fqdn="_payment._mcp._agents.example.com",
+    target="mcp.example.com",
+    port=443,
+)
+
+# Verify (fetches JWKS from .well-known/)
+is_valid = await verify_signature(
+    domain="example.com",
+    signature=signature,
+    fqdn="_payment._mcp._agents.example.com",
+    target="mcp.example.com",
+    port=443,
+)
+print(f"Signature valid: {is_valid}")
+```
+
+### When to Use JWS vs DNSSEC
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Public internet, DNSSEC available | Use DNSSEC (strongest) |
+| Enterprise internal DNS | Use JWS (DNSSEC rarely available) |
+| Split-horizon DNS | Use JWS |
+| Multi-cloud with mixed DNS | Use JWS for consistency |
+| Maximum security | Use both DNSSEC + JWS |

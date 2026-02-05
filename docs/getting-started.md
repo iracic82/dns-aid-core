@@ -2,7 +2,7 @@
 
 This guide will walk you through installing, configuring, and testing DNS-AID.
 
-> **Version 0.4.8** - BANDAID custom SVCB parameters (cap, cap-sha256, bap, policy, realm), capability document fetching, and discovery source transparency!
+> **Version 0.7.0** - Adds Python Kubernetes Controller for auto-publishing agents and JWS signatures for application-layer verification when DNSSEC isn't available. Plus v0.6.0 features: `fetch_rankings()` for community-wide telemetry rankings, LangGraph Studio integration, and competitive agent selection based on cost + reliability.
 
 ## Prerequisites
 
@@ -587,6 +587,48 @@ The index is stored as a TXT record:
 _index._agents.example.com. TXT "agents=chat:mcp,billing:a2a,support:https"
 ```
 
+## Submitting Domains to the Agent Directory (v0.4.0+)
+
+DNS-AID v0.4.0 introduces the Agent Directory - a searchable index of DNS-published agents.
+
+### Submit Your Domain via CLI
+
+```bash
+# Basic submission
+dns-aid submit example.com
+
+# With company metadata
+dns-aid submit example.com \
+    --company-name "Example Corp" \
+    --company-website "https://example.com" \
+    --company-description "We build AI agents"
+```
+
+### Submit via Python Library
+
+```python
+from dns_aid import submit_domain
+
+result = await submit_domain(
+    domain="example.com",
+    company_name="Example Corp",
+    company_website="https://example.com",
+    company_description="We build AI agents"
+)
+print(f"Verification token: {result.verification_token}")
+```
+
+### Submit via Web UI
+
+Visit [directory.velosecurity-ai.io/submit](https://directory.velosecurity-ai.io/submit) to submit your domain through the web interface.
+
+### Verification Process
+
+1. Submit your domain (get a verification token)
+2. Add TXT record: `_dns-aid-verify.example.com TXT "dns-aid-verify=<token>"`
+3. Verify ownership (triggers automatic crawl)
+4. Your agents appear in the directory!
+
 ## Using the Python Library
 
 ```python
@@ -614,6 +656,235 @@ async def main():
     print(f"Security Score: {verification.security_score}/100")
 
 asyncio.run(main())
+```
+
+
+## Kubernetes Controller (v0.7.0+)
+
+The Python Kubernetes Controller auto-publishes agents based on Service/Ingress annotations. Uses idempotent reconciliation for reliable GitOps workflows.
+
+### Quick Start
+
+```bash
+# Install with K8s dependencies
+pip install -e ".[k8s]"
+
+# Configure backend
+export DNS_AID_BACKEND=route53  # or cloudflare, infoblox, ddns
+```
+
+### Annotate Your Service
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-agent
+  annotations:
+    dns-aid.io/agent-name: "payment"
+    dns-aid.io/protocol: "mcp"
+    dns-aid.io/domain: "agents.example.com"
+    dns-aid.io/capabilities: "payment,invoice,refund"
+spec:
+  ports:
+    - port: 443
+```
+
+### Run the Controller
+
+```bash
+# Run controller (watches for annotated Services)
+python -m dns_aid.k8s.controller
+
+# Or use kopf directly
+kopf run src/dns_aid/k8s/controller.py
+```
+
+### Python SDK (Programmatic Use)
+
+```python
+from dns_aid.k8s import apply
+from dns_aid.k8s.models import DesiredAgentState
+
+# Reconcile agent DNS state
+result = await apply(DesiredAgentState(
+    identity="prod/default/payment",
+    domain="agents.example.com",
+    agent_name="payment",
+    protocol="mcp",
+    endpoint="payment.svc.cluster.local",
+    port=443,
+    capabilities=["payment", "invoice"],
+))
+
+print(f"Action: {result.action}")  # CREATED, UPDATED, UNCHANGED, or DELETED
+```
+
+The controller uses the `apply()` idempotent reconciliation pattern — all lifecycle events (ADD, MODIFY, DELETE, restart, resync) result in computing desired state and calling `apply(desired_state)`.
+
+---
+
+## JWS Signatures (v0.7.0+)
+
+JWS (JSON Web Signature) provides application-layer verification when DNSSEC isn't available (~70% of domains). Signatures are embedded in SVCB records and verified against a JWKS published at `.well-known/dns-aid-jwks.json`.
+
+### Generate Keys
+
+```bash
+# Generate EC P-256 keypair
+dns-aid keys generate --output ./keys/
+
+# Export public keys as JWKS (host at .well-known/)
+dns-aid keys export-jwks --output .well-known/dns-aid-jwks.json
+```
+
+### Publish with Signature
+
+```bash
+# Sign record with private key
+dns-aid publish \
+    --name payment \
+    --domain example.com \
+    --protocol mcp \
+    --endpoint mcp.example.com \
+    --sign \
+    --private-key ./keys/private.pem
+```
+
+The SVCB record will include a `sig=` parameter with the JWS.
+
+### Verify on Discovery
+
+```bash
+# Verify signature against JWKS
+dns-aid discover example.com --verify-signature
+```
+
+### Python SDK
+
+```python
+from dns_aid.core.jws import generate_keypair, sign_record, verify_signature
+
+# Generate keypair
+private_key, public_key = generate_keypair()
+
+# Sign a record
+signature = sign_record(
+    private_key=private_key,
+    fqdn="_payment._mcp._agents.example.com",
+    target="mcp.example.com",
+    port=443,
+)
+
+# Verify (fetches JWKS from .well-known/dns-aid-jwks.json)
+is_valid = await verify_signature(
+    domain="example.com",
+    signature=signature,
+    fqdn="_payment._mcp._agents.example.com",
+    target="mcp.example.com",
+    port=443,
+)
+```
+
+### Verification Priority
+
+```
+1. DNSSEC available and valid? → Trust (strongest)
+2. No DNSSEC but JWS sig valid? → Trust (application-layer)
+3. Neither? → Warn but allow (strict mode rejects)
+```
+
+---
+
+## SDK: Agent Invocation & Telemetry (v0.5.5+)
+
+The Tier 1 SDK adds invocation with telemetry capture, agent ranking, and optional OpenTelemetry export.
+
+### Quick Invocation
+
+```python
+import asyncio
+import dns_aid
+
+async def main():
+    # Discover agents
+    result = await dns_aid.discover("highvelocitynetworking.com", protocol="mcp")
+    agent = result.agents[0]
+
+    # Invoke and capture telemetry
+    resp = await dns_aid.invoke(agent, method="tools/list")
+    print(f"Success: {resp.success}")
+    print(f"Latency: {resp.signal.invocation_latency_ms:.0f}ms")
+    print(f"Data:    {resp.data}")
+
+asyncio.run(main())
+```
+
+### Rank Multiple Agents
+
+```python
+import dns_aid
+
+result = await dns_aid.discover("example.com", protocol="mcp")
+ranked = await dns_aid.rank(result.agents, method="tools/list")
+
+for r in ranked:
+    print(f"{r.agent_fqdn}: score={r.composite_score:.1f}")
+```
+
+### Advanced: Connection Reuse & DB Persistence
+
+```python
+from dns_aid.sdk import AgentClient, SDKConfig
+
+config = SDKConfig(
+    persist_signals=True,      # Store signals in PostgreSQL
+    otel_enabled=True,         # Export to OpenTelemetry
+    caller_id="my-app",
+)
+
+async with AgentClient(config=config) as client:
+    # Reuse HTTP connection across calls
+    for agent in agents:
+        await client.invoke(agent, method="tools/list")
+
+    # Rank all invoked agents
+    ranked = client.rank()
+```
+
+### Telemetry API
+
+When the API server is running, telemetry data is available at:
+
+```bash
+# Global stats
+curl http://localhost:8000/api/v1/telemetry/stats
+
+# Agent rankings
+curl http://localhost:8000/api/v1/telemetry/rankings
+
+# Signal history
+curl http://localhost:8000/api/v1/telemetry/signals?limit=10
+
+# Per-agent scorecard
+curl http://localhost:8000/api/v1/telemetry/agents/{fqdn}/scorecard
+```
+
+**Production Telemetry (v0.5.5+):**
+- **Dashboard:** [directory.velosecurity-ai.io/telemetry](https://directory.velosecurity-ai.io/telemetry)
+- **API:** `https://api.velosecurity-ai.io/api/v1/telemetry/signals`
+
+The MCP server automatically pushes telemetry signals to the production API. To enable HTTP push in custom SDK usage:
+
+```python
+config = SDKConfig(
+    http_push_url="https://api.velosecurity-ai.io/api/v1/telemetry/signals"
+)
+```
+
+Or via environment variable:
+```bash
+export DNS_AID_SDK_HTTP_PUSH_URL="https://api.velosecurity-ai.io/api/v1/telemetry/signals"
 ```
 
 ## Using the MCP Server

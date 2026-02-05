@@ -19,11 +19,26 @@ Complete API documentation for DNS-AID - DNS-based Agent Identification and Disc
   - [DNSBackend Interface](#dnsbackend-interface)
   - [Route53Backend](#route53backend)
   - [InfobloxBloxOneBackend](#infobloxbloxonebackend)
+  - [CloudflareBackend](#cloudflarebackend)
   - [DDNSBackend](#ddnsbackend)
   - [MockBackend](#mockbackend)
+- [Kubernetes Controller](#kubernetes-controller)
+  - [apply()](#apply)
+  - [DesiredAgentState](#desiredagentstate)
+  - [Annotations](#annotations)
+- [JWS Signatures](#jws-signatures)
+  - [generate_keypair()](#generate_keypair)
+  - [sign_record()](#sign_record)
+  - [verify_signature()](#verify_signature)
 - [Validation Utilities](#validation-utilities)
 - [CLI Reference](#cli-reference)
 - [MCP Server](#mcp-server)
+- [SDK: Invocation & Telemetry](#sdk-invocation--telemetry)
+  - [AgentClient](#agentclient)
+  - [SDKConfig](#sdkconfig)
+  - [InvocationResult](#invocationresult)
+  - [InvocationSignal](#invocationsignal)
+  - [Ranking](#ranking)
 
 ---
 
@@ -527,6 +542,171 @@ backend = MockBackend(zones={"example.com": {}})
 
 ---
 
+## Kubernetes Controller
+
+The K8s controller automatically publishes agents based on Service/Ingress annotations.
+
+### apply()
+
+Idempotent reconciliation function - the core contract for the K8s controller.
+
+```python
+from dns_aid.k8s import apply, DesiredAgentState
+
+async def apply(
+    desired: DesiredAgentState,
+    backend: DNSBackend | None = None,
+) -> ApplyResult:
+    """
+    Idempotent reconciliation: converge DNS toward desired state.
+
+    - If agent should exist: create/update SVCB + TXT records
+    - If agent should be absent: delete records
+    - Returns result with action taken and drift information
+    """
+```
+
+**Returns:** `ApplyResult` with:
+- `action`: `ReconcileAction` (CREATED, UPDATED, DELETED, UNCHANGED, FAILED)
+- `identity`: Stable identity of the agent
+- `fqdn`: Fully qualified domain name
+- `drift_detected`: Whether drift was detected
+- `drift_details`: Details of detected drift
+
+### DesiredAgentState
+
+Model representing desired DNS state, computed from K8s annotations.
+
+```python
+from dns_aid.k8s.models import DesiredAgentState
+
+state = DesiredAgentState(
+    identity="prod-cluster/default/payment-service",  # {cluster}/{namespace}/{name}
+    domain="agents.example.com",
+    agent_name="payment",
+    protocol="mcp",
+    endpoint="payment.svc.cluster.local",
+    port=443,
+    capabilities=["payment", "invoice"],
+    version="1.0.0",
+    ttl=300,
+    absent=False,  # Set True for deletion
+)
+```
+
+### Annotations
+
+K8s Service/Ingress annotations recognized by the controller:
+
+| Annotation | Required | Description |
+|------------|----------|-------------|
+| `dns-aid.io/agent-name` | Yes | Agent identifier (DNS label format) |
+| `dns-aid.io/protocol` | Yes | Protocol: `mcp`, `a2a`, or `https` |
+| `dns-aid.io/domain` | Yes | Domain to publish under |
+| `dns-aid.io/endpoint` | No | Override auto-detected endpoint |
+| `dns-aid.io/port` | No | Override port (default: first service port) |
+| `dns-aid.io/capabilities` | No | Comma-separated capabilities |
+| `dns-aid.io/version` | No | Agent version string |
+| `dns-aid.io/description` | No | Human-readable description |
+| `dns-aid.io/ttl` | No | DNS record TTL (default: 300) |
+| `dns-aid.io/cap-uri` | No | URI to capability document |
+
+---
+
+## JWS Signatures
+
+Application-layer signature verification as an alternative to DNSSEC.
+
+### generate_keypair()
+
+Generate an EC P-256 keypair for signing DNS records.
+
+```python
+from dns_aid.core.jwks import generate_keypair
+
+private_key, public_key = generate_keypair()
+# private_key: EllipticCurvePrivateKey
+# public_key: EllipticCurvePublicKey
+```
+
+### export_jwks()
+
+Export public key as JWKS JSON for hosting at `.well-known/dns-aid-jwks.json`.
+
+```python
+from dns_aid.core.jwks import export_jwks
+
+jwks_dict = export_jwks(public_key, kid="dns-aid-2024")
+# {
+#   "keys": [{
+#     "kty": "EC",
+#     "crv": "P-256",
+#     "kid": "dns-aid-2024",
+#     "use": "sig",
+#     "x": "...",
+#     "y": "..."
+#   }]
+# }
+```
+
+### sign_record()
+
+Sign a DNS record payload with a private key.
+
+```python
+from dns_aid.core.jwks import sign_record, RecordPayload
+
+payload = RecordPayload(
+    fqdn="_payment._mcp._agents.example.com",
+    target="payment.example.com",
+    port=443,
+    alpn="mcp",
+)
+
+jws_compact = sign_record(payload, private_key)
+# Returns: "eyJhbGciOiJFUzI1NiIs..."
+```
+
+### verify_signature()
+
+Verify a JWS signature against a public key.
+
+```python
+from dns_aid.core.jwks import verify_signature
+
+is_valid, payload = verify_signature(jws_compact, public_key)
+# is_valid: bool
+# payload: RecordPayload if valid, None if invalid
+```
+
+### Publishing with Signatures
+
+```python
+from dns_aid import publish
+
+result = await publish(
+    name="payment",
+    domain="example.com",
+    protocol="mcp",
+    endpoint="payment.example.com",
+    sign=True,
+    private_key_path="./keys/private.pem",
+)
+```
+
+### Discovery with Verification
+
+```python
+from dns_aid import discover
+
+agents = await discover(
+    "example.com",
+    verify_signatures=True,  # Verify JWS sig= parameter
+)
+```
+
+---
+
 ## Validation Utilities
 
 Input validation functions for security compliance.
@@ -729,13 +909,249 @@ except Exception as e:
     print(f"Unexpected error: {e}")
 ```
 
+
+## SDK: Invocation & Telemetry
+
+The Tier 1 SDK (v0.6.0+) provides agent invocation with automatic telemetry capture, and community-wide ranking queries.
+
+### Top-Level Functions
+
+#### invoke()
+
+```python
+async def invoke(
+    agent: AgentRecord,
+    *,
+    method: str | None = None,
+    arguments: dict | None = None,
+    timeout: float | None = None,
+    config: SDKConfig | None = None,
+) -> InvocationResult
+```
+
+One-shot agent invocation with telemetry. Creates an AgentClient, calls the agent, returns the result with an attached signal.
+
+**Example:**
+```python
+import dns_aid
+
+result = await dns_aid.discover("example.com", protocol="mcp")
+resp = await dns_aid.invoke(result.agents[0], method="tools/list")
+print(resp.signal.invocation_latency_ms)  # 148.2
+```
+
+#### rank()
+
+```python
+async def rank(
+    agents: list[AgentRecord],
+    *,
+    method: str | None = None,
+    arguments: dict | None = None,
+    config: SDKConfig | None = None,
+) -> list[RankedAgent]
+```
+
+Invoke multiple agents and rank by telemetry performance (composite score).
+
+### AgentClient
+
+The main SDK class. Use as async context manager for connection reuse.
+
+```python
+from dns_aid.sdk import AgentClient, SDKConfig
+
+config = SDKConfig(timeout_seconds=30.0, caller_id="my-app")
+
+async with AgentClient(config=config) as client:
+    result = await client.invoke(agent, method="tools/list")
+    ranked = client.rank()
+```
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `invoke(agent, method, arguments, timeout)` | Invoke agent, return `InvocationResult` |
+| `rank(strategy)` | Rank all invoked agents by composite score |
+| `fetch_rankings(fqdns, limit)` | Fetch community-wide rankings from telemetry API (v0.6.0+) |
+| `signals` | Property: list of all collected `InvocationSignal` objects |
+
+#### fetch_rankings() (v0.6.0+)
+
+```python
+async def fetch_rankings(
+    self,
+    fqdns: list[str] | None = None,
+    limit: int = 50,
+) -> list[dict]
+```
+
+Fetch community-wide rankings from the central telemetry API. Returns pre-computed composite scores based on aggregated telemetry from all SDK users.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `fqdns` | `list[str] \| None` | `None` | Filter rankings to specific agent FQDNs |
+| `limit` | `int` | `50` | Maximum number of rankings to return |
+
+**Returns:** List of ranking dictionaries with `agent_fqdn`, `composite_score`, etc.
+
+**Example:**
+```python
+async with AgentClient(config) as client:
+    # Get all rankings
+    rankings = await client.fetch_rankings()
+
+    # Get rankings for specific agents only
+    rankings = await client.fetch_rankings(
+        fqdns=["_booking._mcp._agents.example.com"],
+        limit=10
+    )
+
+    for r in rankings:
+        print(f"{r['agent_fqdn']}: {r['composite_score']}")
+```
+
+**Note:** Requires `telemetry_api_url` to be configured in SDKConfig. Returns empty list if not configured.
+
+### SDKConfig
+
+```python
+from dns_aid.sdk import SDKConfig
+
+config = SDKConfig(
+    timeout_seconds=30.0,        # Default request timeout
+    caller_id="my-app",          # Caller identifier for signals
+    persist_signals=False,       # Auto-save signals to PostgreSQL
+    database_url=None,           # DB URL (falls back to DATABASE_URL env)
+    otel_enabled=False,          # Enable OpenTelemetry export
+    otel_endpoint=None,          # OTLP endpoint URL
+    otel_export_format="otlp",   # "otlp" or "console"
+    http_push_url=None,          # POST signals to remote telemetry API (v0.5.5+)
+    telemetry_api_url=None,      # Base URL for fetch_rankings() queries (v0.6.0+)
+)
+
+# Or from environment variables:
+config = SDKConfig.from_env()
+```
+
+**Environment Variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DNS_AID_SDK_TIMEOUT` | 30.0 | Request timeout in seconds |
+| `DNS_AID_SDK_CALLER_ID` | None | Caller identifier |
+| `DNS_AID_SDK_PERSIST_SIGNALS` | false | Enable DB persistence |
+| `DATABASE_URL` | None | PostgreSQL connection URL |
+| `DNS_AID_SDK_OTEL_ENABLED` | false | Enable OpenTelemetry |
+| `DNS_AID_SDK_OTEL_ENDPOINT` | None | OTLP collector URL |
+| `DNS_AID_SDK_HTTP_PUSH_URL` | None | POST signals to this URL (v0.5.5+) |
+| `DNS_AID_SDK_TELEMETRY_API_URL` | None | Base URL for fetch_rankings() queries (v0.6.0+) |
+
+### InvocationResult
+
+Returned by `invoke()`. Contains response data and telemetry signal.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | Whether invocation succeeded |
+| `data` | dict \| str \| None | Response payload |
+| `signal` | InvocationSignal | Telemetry signal for this call |
+| `error_message` | str \| None | Error description if failed |
+
+### InvocationSignal
+
+Per-call telemetry captured automatically.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique signal identifier |
+| `agent_fqdn` | str | Agent DNS-AID FQDN |
+| `agent_endpoint` | str | Endpoint URL used |
+| `protocol` | str | Protocol (mcp, a2a, https) |
+| `method` | str | Method called |
+| `status` | InvocationStatus | success, error, timeout, refused |
+| `invocation_latency_ms` | float | Total invocation time |
+| `ttfb_ms` | float | Time to first byte |
+| `http_status_code` | int | HTTP response status |
+| `cost_units` | float | Cost from X-Cost-Units header |
+| `cost_currency` | str | Currency from X-Cost-Currency header |
+| `response_size_bytes` | int | Response payload size |
+| `tls_version` | str | TLS version used |
+| `timestamp` | datetime | When the call was made |
+| `caller_id` | str | Caller identifier from config |
+
+### Ranking
+
+```python
+ranked = client.rank()  # Default: WeightedCompositeStrategy
+
+for r in ranked:
+    print(f"{r.agent_fqdn}: {r.composite_score:.1f}")
+```
+
+**Scoring Formula (WeightedComposite):**
+```
+composite = 0.40 * reliability   (success_rate * 100)
+          + 0.30 * latency       (100 * (1 - avg_latency/5000))
+          + 0.15 * cost          (relative to cheapest)
+          + 0.15 * freshness     (recency weighted)
+```
+
+**Available Strategies:**
+- `WeightedCompositeStrategy` (default)
+- `LatencyFirstStrategy` — prioritizes lowest latency
+- `ReliabilityFirstStrategy` — prioritizes highest success rate
+
+### HTTP Telemetry Push (v0.5.5+)
+
+The SDK can push signals to a remote telemetry API for centralized monitoring:
+
+```python
+config = SDKConfig(
+    http_push_url="https://api.velosecurity-ai.io/api/v1/telemetry/signals"
+)
+
+async with AgentClient(config=config) as client:
+    # Signals automatically pushed to telemetry API
+    await client.invoke(agent, method="tools/list")
+```
+
+**Production Endpoints:**
+- **POST signals:** `https://api.velosecurity-ai.io/api/v1/telemetry/signals`
+- **Dashboard:** [directory.velosecurity-ai.io/telemetry](https://directory.velosecurity-ai.io/telemetry)
+
+**POST /api/v1/telemetry/signals**
+
+Accepts telemetry signals from SDK clients.
+
+```bash
+curl -X POST https://api.velosecurity-ai.io/api/v1/telemetry/signals \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_fqdn": "_booking._mcp._agents.example.com",
+    "agent_endpoint": "https://booking.example.com/mcp",
+    "protocol": "mcp",
+    "method": "tools/list",
+    "invocation_latency_ms": 150,
+    "status": "success",
+    "caller_id": "my-app"
+  }'
+```
+
+**Response:** `202 Accepted` with `{"accepted": 1, "signal_id": "..."}`
+
+**Note:** The MCP server (`dns-aid-mcp`) has HTTP push enabled by default to the production API.
+
 ---
 
 ## Version
 
 ```python
 import dns_aid
-print(dns_aid.__version__)  # "0.4.8"
+print(dns_aid.__version__)  # "0.6.0"
 ```
 
 ---
