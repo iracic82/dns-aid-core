@@ -8,6 +8,9 @@ Usage:
     dns-aid list            List DNS-AID records
     dns-aid zones           List available DNS zones
     dns-aid delete          Delete an agent from DNS
+    dns-aid domain submit   Submit domain to Agent Directory
+    dns-aid domain verify   Verify domain ownership
+    dns-aid domain status   Check domain status in directory
     dns-aid index list      List agents in domain's index
     dns-aid index sync      Sync index with actual DNS records
 """
@@ -100,6 +103,14 @@ def publish(
         bool,
         typer.Option("--no-update-index", help="Don't update the domain's agent index record"),
     ] = False,
+    sign: Annotated[
+        bool,
+        typer.Option("--sign", help="Sign record with JWS (requires --private-key)"),
+    ] = False,
+    private_key: Annotated[
+        str | None,
+        typer.Option("--private-key", help="Path to EC P-256 private key PEM for signing"),
+    ] = None,
 ):
     """
     Publish an agent to DNS using DNS-AID protocol.
@@ -119,6 +130,10 @@ def publish(
         dns-aid publish -n booking -d example.com -p mcp \\
           --cap-uri https://mcp.example.com/.well-known/agent-cap.json \\
           --bap mcp --realm production
+
+        # With JWS signing (alternative to DNSSEC):
+        dns-aid publish -n booking -d example.com -p mcp \\
+          --sign --private-key ./keys/private.pem
     """
     from dns_aid.core.publisher import publish as do_publish
 
@@ -133,6 +148,11 @@ def publish(
 
     # Parse bap comma-separated string into list
     bap_list = [b.strip() for b in bap.split(",") if b.strip()] if bap else None
+
+    # Validate sign options
+    if sign and not private_key:
+        error_console.print("[red]✗ --sign requires --private-key[/red]")
+        raise typer.Exit(1)
 
     result = run_async(
         do_publish(
@@ -153,6 +173,8 @@ def publish(
             bap=bap_list,
             policy_uri=policy_uri,
             realm=realm,
+            sign=sign,
+            private_key_path=private_key,
         )
     )
 
@@ -214,6 +236,14 @@ def discover(
             help="Use HTTP index endpoint (https://_index._aiagents.{domain}/index-wellknown) instead of DNS-only discovery",
         ),
     ] = False,
+    verify_signatures: Annotated[
+        bool,
+        typer.Option(
+            "--verify-signatures",
+            "--verify",
+            help="Verify JWS signatures on agents (alternative to DNSSEC)",
+        ),
+    ] = False,
 ):
     """
     Discover agents at a domain using DNS-AID protocol.
@@ -240,6 +270,7 @@ def discover(
             protocol=protocol,
             name=name,
             use_http_index=use_http_index,
+            verify_signatures=verify_signatures,
         )
     )
 
@@ -527,6 +558,159 @@ def delete(
 
 
 # ============================================================================
+# DOMAIN COMMANDS
+# ============================================================================
+
+# Create a sub-app for domain commands
+domain_app = typer.Typer(
+    name="domain",
+    help="Manage domains in the DNS-AID Agent Directory",
+    no_args_is_help=True,
+)
+app.add_typer(domain_app, name="domain")
+
+
+@domain_app.command("submit")
+def domain_submit(
+    domain: Annotated[str, typer.Argument(help="Domain to submit (e.g., example.com)")],
+    company_name: Annotated[
+        str | None,
+        typer.Option("--company-name", help="Company/organization name"),
+    ] = None,
+    company_website: Annotated[
+        str | None,
+        typer.Option("--company-website", help="Company website URL"),
+    ] = None,
+    company_logo: Annotated[
+        str | None,
+        typer.Option("--company-logo", help="Company logo URL"),
+    ] = None,
+    company_description: Annotated[
+        str | None,
+        typer.Option("--company-description", help="Company description"),
+    ] = None,
+    directory_url: Annotated[
+        str,
+        typer.Option("--directory-url", help="Directory API URL"),
+    ] = "https://api.velosecurity-ai.io",
+):
+    """
+    Submit a domain to the DNS-AID Agent Directory.
+
+    This registers your domain for agent indexing. You'll receive a DNS TXT record
+    to add for verification.
+
+    Example:
+        dns-aid domain submit example.com
+
+        # With company metadata:
+        dns-aid domain submit example.com \\
+          --company-name "Acme Corp" \\
+          --company-website "https://acme.com" \\
+          --company-description "AI automation company"
+    """
+    from dns_aid.core.directory import CompanyMetadata, submit_domain
+
+    console.print(f"\n[bold]Submitting domain: {domain}[/bold]\n")
+
+    # Build company metadata if any provided
+    company = None
+    if any([company_name, company_website, company_logo, company_description]):
+        company = CompanyMetadata(
+            name=company_name,
+            website=company_website,
+            logo_url=company_logo,
+            description=company_description,
+        )
+        if company_name:
+            console.print(f"  Company: {company_name}")
+
+    result = run_async(submit_domain(domain, company=company, directory_url=directory_url))
+
+    if result.success:
+        console.print("[green]✓ Domain submitted successfully![/green]\n")
+        console.print("[bold]Next step:[/bold] Add this DNS TXT record to verify ownership:\n")
+        console.print(f"  [bold]Name:[/bold] _dns-aid-verify.{domain}")
+        console.print("  [bold]Type:[/bold] TXT")
+        console.print(f"  [bold]Value:[/bold] {result.verification_token}\n")
+        if result.dns_record:
+            console.print(f"  [dim]Full record: {result.dns_record}[/dim]\n")
+        console.print("After adding the record, verify with:")
+        console.print(f"  dns-aid domain verify {domain}")
+    else:
+        error_console.print(f"[red]✗ {result.message}[/red]")
+        raise typer.Exit(1)
+
+
+@domain_app.command("verify")
+def domain_verify(
+    domain: Annotated[str, typer.Argument(help="Domain to verify")],
+    directory_url: Annotated[
+        str,
+        typer.Option("--directory-url", help="Directory API URL"),
+    ] = "https://api.velosecurity-ai.io",
+):
+    """
+    Verify domain ownership and trigger agent crawling.
+
+    Run this after adding the DNS verification TXT record.
+
+    Example:
+        dns-aid domain verify example.com
+    """
+    from dns_aid.core.directory import verify_domain
+
+    console.print(f"\n[bold]Verifying domain: {domain}[/bold]\n")
+
+    result = run_async(verify_domain(domain, directory_url=directory_url))
+
+    if result.success and result.verified:
+        console.print("[green]✓ Domain verified successfully![/green]\n")
+        console.print(f"  Agents discovered: {result.agents_found}")
+        console.print(f"\n  View your agents at: https://directory.velosecurity-ai.io/?q={domain}")
+    else:
+        error_console.print(f"[red]✗ {result.message}[/red]")
+        console.print("\n[dim]Tip: Make sure the DNS TXT record has propagated.[/dim]")
+        console.print(f"[dim]Check with: dig _dns-aid-verify.{domain} TXT[/dim]")
+        raise typer.Exit(1)
+
+
+@domain_app.command("status")
+def domain_status(
+    domain: Annotated[str, typer.Argument(help="Domain to check")],
+    directory_url: Annotated[
+        str,
+        typer.Option("--directory-url", help="Directory API URL"),
+    ] = "https://api.velosecurity-ai.io",
+):
+    """
+    Check the status of a domain in the directory.
+
+    Example:
+        dns-aid domain status example.com
+    """
+    from dns_aid.core.directory import get_domain_status
+
+    console.print(f"\n[bold]Domain status: {domain}[/bold]\n")
+
+    status = run_async(get_domain_status(domain, directory_url=directory_url))
+
+    if "error" in status:
+        error_console.print(f"[red]✗ {status['error']}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"  Domain: {status.get('domain', domain)}")
+    console.print(
+        f"  Verified: {'[green]Yes[/green]' if status.get('verified') else '[yellow]No[/yellow]'}"
+    )
+    console.print(f"  Agent count: {status.get('agent_count', 0)}")
+    if status.get("last_crawled"):
+        console.print(f"  Last crawled: {status.get('last_crawled')}")
+    if status.get("submitted_at"):
+        console.print(f"  Submitted: {status.get('submitted_at')}")
+
+
+# ============================================================================
 # INDEX COMMANDS
 # ============================================================================
 
@@ -626,6 +810,183 @@ def index_sync(
     else:
         error_console.print(f"[red]✗ Sync failed: {result.message}[/red]")
         raise typer.Exit(1)
+
+
+# ============================================================================
+# KEYS COMMANDS (JWS Signing)
+# ============================================================================
+
+keys_app = typer.Typer(
+    help="Manage signing keys for JWS verification (alternative to DNSSEC)",
+    no_args_is_help=True,
+)
+app.add_typer(keys_app, name="keys")
+
+
+@keys_app.command("generate")
+def keys_generate(
+    output: Annotated[
+        str,
+        typer.Option("--output", "-o", help="Output directory for keypair files"),
+    ] = ".",
+    kid: Annotated[
+        str,
+        typer.Option("--kid", help="Key ID for the keypair"),
+    ] = "dns-aid-default",
+    password: Annotated[
+        str | None,
+        typer.Option("--password", "-p", help="Password to encrypt private key (optional)"),
+    ] = None,
+):
+    """
+    Generate an EC P-256 keypair for JWS signing.
+
+    Creates two files:
+    - {output}/private.pem: Private key (keep secret!)
+    - {output}/public.pem: Public key
+
+    Example:
+        dns-aid keys generate --output ./keys --kid dns-aid-2024
+
+        # With password protection:
+        dns-aid keys generate -o ./keys -p mypassword
+    """
+    import os
+    from pathlib import Path
+
+    from cryptography.hazmat.primitives import serialization
+
+    from dns_aid.core.jwks import generate_keypair
+
+    output_dir = Path(output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    console.print("\n[bold]Generating EC P-256 keypair...[/bold]\n")
+
+    private_key, public_key = generate_keypair()
+
+    # Determine encryption
+    encryption: serialization.KeySerializationEncryption
+    if password:
+        encryption = serialization.BestAvailableEncryption(password.encode())
+    else:
+        encryption = serialization.NoEncryption()
+
+    # Save private key
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=encryption,
+    )
+    private_path = output_dir / "private.pem"
+    private_path.write_bytes(private_pem)
+    os.chmod(private_path, 0o600)  # Restrict permissions
+
+    # Save public key
+    public_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    public_path = output_dir / "public.pem"
+    public_path.write_bytes(public_pem)
+
+    console.print("[green]✓ Keypair generated successfully![/green]\n")
+    console.print(f"  [bold]Private key:[/bold] {private_path}")
+    console.print(f"  [bold]Public key:[/bold] {public_path}")
+    console.print(f"  [bold]Key ID:[/bold] {kid}")
+
+    if password:
+        console.print("\n  [yellow]Private key is password-protected[/yellow]")
+    else:
+        console.print("\n  [yellow]⚠ Private key is NOT encrypted - protect this file![/yellow]")
+
+    console.print("\n[dim]Next steps:[/dim]")
+    console.print("  1. Export JWKS: dns-aid keys export-jwks -i public.pem")
+    console.print("  2. Publish JWKS to: https://yourdomain/.well-known/dns-aid-jwks.json")
+    console.print("  3. Sign agents: dns-aid publish --sign --private-key private.pem ...")
+
+
+@keys_app.command("export-jwks")
+def keys_export_jwks(
+    input_key: Annotated[
+        str,
+        typer.Option("--input", "-i", help="Path to public key PEM file"),
+    ],
+    output: Annotated[
+        str | None,
+        typer.Option("--output", "-o", help="Output file path (stdout if not specified)"),
+    ] = None,
+    kid: Annotated[
+        str,
+        typer.Option("--kid", help="Key ID to include in JWKS"),
+    ] = "dns-aid-default",
+):
+    """
+    Export a public key as a JWKS document.
+
+    The JWKS document should be published at:
+    https://yourdomain/.well-known/dns-aid-jwks.json
+
+    Example:
+        # Export to stdout
+        dns-aid keys export-jwks -i public.pem
+
+        # Export to file
+        dns-aid keys export-jwks -i public.pem -o jwks.json
+
+        # With custom key ID
+        dns-aid keys export-jwks -i public.pem --kid dns-aid-2024 -o jwks.json
+    """
+    import json
+    from pathlib import Path
+
+    from cryptography.hazmat.primitives import serialization
+
+    from dns_aid.core.jwks import export_jwks
+
+    # Load public key
+    key_path = Path(input_key)
+    if not key_path.exists():
+        error_console.print(f"[red]✗ Key file not found: {input_key}[/red]")
+        raise typer.Exit(1)
+
+    key_data = key_path.read_bytes()
+
+    # Try to load as public key first, then try private key
+    from cryptography.hazmat.primitives.asymmetric.ec import (
+        EllipticCurvePrivateKey,
+        EllipticCurvePublicKey,
+    )
+
+    try:
+        public_key = serialization.load_pem_public_key(key_data)
+        if not isinstance(public_key, EllipticCurvePublicKey):
+            error_console.print("[red]✗ Key must be an EC (P-256) key[/red]")
+            raise typer.Exit(1)
+    except Exception:
+        # Try loading as private key and extracting public key
+        try:
+            private_key = serialization.load_pem_private_key(key_data, password=None)
+            if not isinstance(private_key, EllipticCurvePrivateKey):
+                error_console.print("[red]✗ Key must be an EC (P-256) key[/red]")
+                raise typer.Exit(1)
+            public_key = private_key.public_key()
+        except Exception as e:
+            error_console.print(f"[red]✗ Failed to load key: {e}[/red]")
+            raise typer.Exit(1) from None
+
+    # Generate JWKS
+    jwks = export_jwks(public_key, kid=kid)
+    jwks_json = json.dumps(jwks, indent=2)
+
+    if output:
+        Path(output).write_text(jwks_json)
+        console.print(f"[green]✓ JWKS exported to {output}[/green]")
+    else:
+        console.print(jwks_json)
+
+    console.print("\n[dim]Publish this file at:[/dim]")
+    console.print("  https://yourdomain/.well-known/dns-aid-jwks.json")
 
 
 # ============================================================================

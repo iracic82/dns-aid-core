@@ -25,11 +25,47 @@ def set_default_backend(backend: DNSBackend) -> None:
     _default_backend = backend
 
 
+def reset_default_backend() -> None:
+    """Reset the default backend so it will be re-initialized on next call."""
+    global _default_backend
+    _default_backend = None
+
+
 def get_default_backend() -> DNSBackend:
-    """Get the default DNS backend, creating mock if not set."""
+    """Get the default DNS backend based on DNS_AID_BACKEND env var.
+
+    Supported values: route53, cloudflare, infoblox, ddns, mock (default)
+    """
+    import os
+
     global _default_backend
     if _default_backend is None:
-        _default_backend = MockBackend()
+        backend_type = os.environ.get("DNS_AID_BACKEND", "mock").lower()
+
+        if backend_type == "route53":
+            from dns_aid.backends.route53 import Route53Backend
+
+            _default_backend = Route53Backend()
+        elif backend_type == "cloudflare":
+            from dns_aid.backends.cloudflare import CloudflareBackend
+
+            _default_backend = CloudflareBackend()
+        elif backend_type == "infoblox":
+            from dns_aid.backends.infoblox import InfobloxBackend
+
+            _default_backend = InfobloxBackend()
+        elif backend_type == "ddns":
+            from dns_aid.backends.ddns import DDNSBackend
+
+            _default_backend = DDNSBackend()
+        else:
+            _default_backend = MockBackend()
+
+        logger.info(
+            "Initialized default DNS backend",
+            backend=backend_type,
+            backend_name=_default_backend.name,
+        )
     return _default_backend
 
 
@@ -51,6 +87,8 @@ async def publish(
     bap: list[str] | None = None,
     policy_uri: str | None = None,
     realm: str | None = None,
+    sign: bool = False,
+    private_key_path: str | None = None,
 ) -> PublishResult:
     """
     Publish an AI agent to DNS using DNS-AID protocol.
@@ -76,6 +114,8 @@ async def publish(
         bap: Supported bulk agent protocols (e.g., ["mcp", "a2a"])
         policy_uri: URI to agent policy document
         realm: Multi-tenant scope identifier (e.g., "production")
+        sign: If True, sign the record with JWS (requires private_key_path)
+        private_key_path: Path to EC P-256 private key PEM file for signing
 
     Returns:
         PublishResult with created records
@@ -97,6 +137,31 @@ async def publish(
     if isinstance(protocol, str):
         protocol = Protocol(protocol.lower())
 
+    # Generate JWS signature if requested
+    sig = None
+    if sign:
+        if not private_key_path:
+            raise ValueError("private_key_path is required when sign=True")
+
+        from dns_aid.core.jwks import (
+            RecordPayload,
+            load_private_key_from_pem,
+            sign_record,
+        )
+
+        logger.info("Signing record with JWS", private_key_path=private_key_path)
+        private_key = load_private_key_from_pem(private_key_path)
+        fqdn = f"_{name}._{protocol.value}._agents.{domain}"
+        payload = RecordPayload.from_agent_record(
+            fqdn=fqdn,
+            target=endpoint,
+            port=port,
+            protocol=protocol.value,
+            ttl_seconds=ttl,
+        )
+        sig = sign_record(payload, private_key)
+        logger.info("Record signed successfully", fqdn=fqdn)
+
     # Create agent record
     agent = AgentRecord(
         name=name,
@@ -115,6 +180,7 @@ async def publish(
         bap=bap or [],
         policy_uri=policy_uri,
         realm=realm,
+        sig=sig,
     )
 
     # Get backend

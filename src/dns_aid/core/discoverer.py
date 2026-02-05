@@ -7,14 +7,17 @@ records as specified in IETF draft-mozleywilliams-dnsop-bandaid-02.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Literal
+from urllib.parse import urlparse
 
 import dns.asyncresolver
 import dns.rdatatype
 import dns.resolver
 import structlog
 
+from dns_aid.core.a2a_card import fetch_agent_card
 from dns_aid.core.cap_fetcher import fetch_cap_document
 from dns_aid.core.http_index import HttpIndexAgent, fetch_http_index_or_empty
 from dns_aid.core.models import AgentRecord, DiscoveryResult, Protocol
@@ -28,6 +31,8 @@ async def discover(
     name: str | None = None,
     require_dnssec: bool = False,  # Default False for now, True in production
     use_http_index: bool = False,
+    enrich_endpoints: bool = True,
+    verify_signatures: bool = False,
 ) -> DiscoveryResult:
     """
     Discover AI agents at a domain using DNS-AID protocol.
@@ -43,6 +48,12 @@ async def discover(
         use_http_index: If True, fetch agent list from HTTP endpoint
                         (/.well-known/agents-index.json) instead of using
                         DNS-only discovery. Default False (pure DNS).
+        enrich_endpoints: If True (default), fetch .well-known/agent.json
+                         from each discovered agent's host to resolve
+                         protocol-specific endpoint paths (e.g., /mcp).
+        verify_signatures: If True, verify JWS signatures on agents that have
+                          a `sig` parameter but no DNSSEC validation. Invalid
+                          signatures are logged but don't block discovery.
 
     Returns:
         DiscoveryResult with list of discovered agents
@@ -109,6 +120,17 @@ async def discover(
         logger.error("No nameservers available", domain=domain)
     except Exception as e:
         logger.exception("DNS query failed", error=str(e))
+
+    # Enrich agents with endpoint paths from .well-known/agent.json
+    if enrich_endpoints and agents:
+        try:
+            await _enrich_agents_with_endpoint_paths(agents)
+        except Exception:
+            logger.debug("Endpoint enrichment failed (non-fatal)", exc_info=True)
+
+    # Verify JWS signatures if requested and DNSSEC not available
+    if verify_signatures and agents:
+        await _verify_agent_signatures(agents, domain, dnssec_validated)
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -463,6 +485,19 @@ async def _discover_via_http_index(
                 and http_agent.capability.modality not in agent.use_cases
             ):
                 agent.use_cases.append(f"modality:{http_agent.capability.modality}")
+
+            # Merge HTTP index endpoint path when it's more specific than DNS
+            if http_agent.endpoint and not agent.endpoint_override:
+                parsed = urlparse(http_agent.endpoint)
+                if parsed.path and parsed.path != "/":
+                    agent.endpoint_override = http_agent.endpoint
+                    agent.endpoint_source = "http_index"
+                    logger.debug(
+                        "Merged HTTP index endpoint path",
+                        agent=agent.name,
+                        endpoint=http_agent.endpoint,
+                    )
+
             agents.append(agent)
         else:
             # If DNS lookup fails, create agent from HTTP index data only
@@ -538,6 +573,67 @@ def _http_agent_to_record(
     )
 
 
+async def _enrich_agents_with_endpoint_paths(agents: list[AgentRecord]) -> None:
+    """
+    Enrich discovered agents with data from .well-known/agent.json (A2A Agent Card).
+
+    For agents without an endpoint_override, fetches .well-known/agent.json
+    from their target host and:
+    1. Extracts protocol-specific endpoint path (e.g., endpoints.mcp = "/mcp")
+    2. Stores the full A2AAgentCard on the agent for skills, auth, etc.
+
+    Modifies agents in place. Failures are silently skipped.
+    """
+    # Only enrich agents that don't already have an endpoint_override
+    agents_to_enrich = [a for a in agents if not a.endpoint_override]
+    if not agents_to_enrich:
+        return
+
+    # Deduplicate by target_host to avoid redundant fetches
+    hosts_to_agents: dict[str, list[AgentRecord]] = {}
+    for agent in agents_to_enrich:
+        hosts_to_agents.setdefault(agent.target_host, []).append(agent)
+
+    # Fetch .well-known/agent.json concurrently for all unique hosts
+    async def _fetch_and_enrich(host: str, host_agents: list[AgentRecord]) -> None:
+        # Use typed A2AAgentCard fetcher
+        card = await fetch_agent_card(f"https://{host}")
+        if not card:
+            return
+
+        for agent in host_agents:
+            # Store the full agent card for downstream use
+            agent.agent_card = card
+
+            # Extract endpoint path from card metadata if available
+            endpoints = card.metadata.get("endpoints")
+            if isinstance(endpoints, dict):
+                protocol_key = agent.protocol.value  # "mcp", "a2a", "https"
+                path = endpoints.get(protocol_key)
+                if path and isinstance(path, str):
+                    # Construct full endpoint URL with path
+                    agent.endpoint_override = f"https://{agent.target_host}:{agent.port}{path}"
+                    agent.endpoint_source = "dns_svcb_enriched"
+                    logger.debug(
+                        "Enriched agent endpoint from .well-known/agent.json",
+                        agent=agent.name,
+                        endpoint=agent.endpoint_override,
+                        path=path,
+                    )
+
+            logger.debug(
+                "Attached A2A Agent Card to agent",
+                agent=agent.name,
+                card_name=card.name,
+                skills_count=len(card.skills),
+            )
+
+    await asyncio.gather(
+        *[_fetch_and_enrich(host, host_agents) for host, host_agents in hosts_to_agents.items()],
+        return_exceptions=True,
+    )
+
+
 async def discover_at_fqdn(fqdn: str) -> AgentRecord | None:
     """
     Discover agent at a specific FQDN.
@@ -582,3 +678,65 @@ async def discover_at_fqdn(fqdn: str) -> AgentRecord | None:
         return None
 
     return await _query_single_agent(domain, name, protocol)
+
+
+async def _verify_agent_signatures(
+    agents: list[AgentRecord],
+    domain: str,
+    dnssec_validated: bool,
+) -> None:
+    """
+    Verify JWS signatures on agents that have sig parameter but no DNSSEC.
+
+    For each agent:
+    - If DNSSEC validated: skip (stronger verification already done)
+    - If has sig parameter: verify against domain's JWKS
+    - Log warnings for invalid/missing signatures but don't remove agents
+
+    Args:
+        agents: List of agents to verify (modified in place with verification status)
+        domain: Domain to fetch JWKS from
+        dnssec_validated: Whether DNSSEC validation passed
+    """
+    if dnssec_validated:
+        logger.debug("DNSSEC validated, skipping JWS verification")
+        return
+
+    # Find agents with signatures to verify
+    agents_with_sig = [a for a in agents if a.sig]
+
+    if not agents_with_sig:
+        logger.debug("No agents with JWS signatures to verify")
+        return
+
+    logger.info(
+        "Verifying JWS signatures",
+        agents_count=len(agents_with_sig),
+        domain=domain,
+    )
+
+    from dns_aid.core.jwks import verify_record_signature
+
+    for agent in agents_with_sig:
+        try:
+            is_valid, payload = await verify_record_signature(domain, agent.sig)
+
+            if is_valid:
+                logger.info(
+                    "JWS signature verified",
+                    agent=agent.name,
+                    fqdn=agent.fqdn,
+                )
+                # Could add a verified flag to AgentRecord in future
+            else:
+                logger.warning(
+                    "JWS signature verification failed",
+                    agent=agent.name,
+                    fqdn=agent.fqdn,
+                )
+        except Exception as e:
+            logger.warning(
+                "JWS verification error",
+                agent=agent.name,
+                error=str(e),
+            )

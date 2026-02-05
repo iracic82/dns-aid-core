@@ -7,13 +7,13 @@ as specified in IETF draft-mozleywilliams-dnsop-bandaid-02.
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Literal
+from enum import StrEnum
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 
-class Protocol(str, Enum):
+class Protocol(StrEnum):
     """
     Supported agent communication protocols.
 
@@ -137,6 +137,13 @@ class AgentRecord(BaseModel):
         "(e.g., 'production', 'staging')",
     )
 
+    # JWS signature for application-layer verification (alternative to DNSSEC)
+    sig: str | None = Field(
+        default=None,
+        description="JWS compact signature for record verification when DNSSEC unavailable. "
+        "Contains signed payload with fqdn, target, port, alpn, iat, exp.",
+    )
+
     # Capability source tracking
     capability_source: Literal["cap_uri", "txt_fallback", "none"] | None = Field(
         default=None,
@@ -153,11 +160,26 @@ class AgentRecord(BaseModel):
     )
 
     # Endpoint source - where the endpoint information came from
-    endpoint_source: Literal["dns_svcb", "http_index_fallback", "direct"] | None = Field(
+    endpoint_source: (
+        Literal["dns_svcb", "dns_svcb_enriched", "http_index", "http_index_fallback", "direct"]
+        | None
+    ) = Field(
         default=None,
         description="Source of endpoint: 'dns_svcb' (from DNS SVCB record), "
+        "'dns_svcb_enriched' (DNS + .well-known/agent.json path), "
+        "'http_index' (DNS + HTTP index endpoint), "
         "'http_index_fallback' (HTTP index without DNS), 'direct' (explicitly provided)",
     )
+
+    # A2A Agent Card (populated from .well-known/agent.json when available)
+    agent_card: Any | None = Field(
+        default=None,
+        description="Full A2A Agent Card from .well-known/agent.json. "
+        "Contains skills, authentication, provider info. Type: A2AAgentCard",
+        exclude=True,  # Exclude from serialization by default
+    )
+
+    model_config = {"arbitrary_types_allowed": True}
 
     @field_validator("name", mode="before")
     @classmethod
@@ -225,6 +247,9 @@ class AgentRecord(BaseModel):
             params["policy"] = self.policy_uri
         if self.realm:
             params["realm"] = self.realm
+        # JWS signature for application-layer verification
+        if self.sig:
+            params["sig"] = self.sig
         return params
 
     def to_txt_values(self) -> list[str]:

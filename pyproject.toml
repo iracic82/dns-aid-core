@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dns-aid"
-version = "0.4.9"
+version = "0.5.0"
 description = "DNS-based Agent Identification and Discovery - Reference Implementation"
 readme = "README.md"
 license = "Apache-2.0"
@@ -23,7 +23,7 @@ keywords = [
     "dnssec"
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
@@ -55,6 +55,19 @@ route53 = [
 infoblox = [
     # Uses httpx from core deps
 ]
+jws = [
+    # JWS signature support (alternative to DNSSEC)
+    "cryptography>=41.0.0",
+]
+sdk = [
+    # SDK with protocol handlers, ranking, signals
+    # Core SDK uses httpx (already in deps)
+]
+otel = [
+    # OpenTelemetry integration for SDK telemetry
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -63,6 +76,7 @@ dev = [
     "ruff>=0.3.0",
     "boto3-stubs[route53]>=1.34.0",
     "httpx>=0.27.0",
+    "cryptography>=41.0.0",
 ]
 all = [
     # CLI
@@ -73,6 +87,11 @@ all = [
     "uvicorn>=0.30.0",
     # Route53
     "boto3>=1.34.0",
+    # JWS
+    "cryptography>=41.0.0",
+    # OpenTelemetry
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
     # Dev
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",

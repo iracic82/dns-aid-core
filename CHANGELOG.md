@@ -5,6 +5,43 @@ All notable changes to DNS-AID will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-05
+
+### Added
+- **A2A Agent Card Support** (`src/dns_aid/core/a2a_card.py`)
+  - Typed dataclasses: `A2AAgentCard`, `A2ASkill`, `A2AAuthentication`, `A2AProvider`
+  - `fetch_agent_card()` — fetches from `/.well-known/agent.json`
+  - `fetch_agent_card_from_domain()` — convenience wrapper
+  - `card.to_capabilities()` — converts A2A skills to DNS-AID capability format
+  - Discovery automatically attaches `agent_card` to discovered agents
+
+- **JWS Signatures** (`src/dns_aid/core/jwks.py`)
+  - Application-layer verification alternative to DNSSEC (~70% of domains lack DNSSEC)
+  - `generate_keypair()` — creates EC P-256 (ES256) key pairs
+  - `export_jwks()` — exports public key as JWKS for `.well-known/dns-aid-jwks.json`
+  - `sign_record()` — signs SVCB record payload, adds `sig` parameter
+  - `verify_record_signature()` — fetches JWKS and verifies signature
+  - CLI: `dns-aid keys generate`, `dns-aid keys export-jwks`
+  - Optional `[jws]` extra: `pip install dns-aid[jws]`
+
+- **SDK Package** (`src/dns_aid/sdk/`)
+  - `AgentClient` — discover + invoke agents with automatic protocol handling
+  - Protocol handlers: `A2AProtocolHandler`, `MCPProtocolHandler`, `HTTPSProtocolHandler`
+  - Ranking: `AgentRanker` with pluggable strategies (latency, success rate, round-robin)
+  - Signals: `SignalCollector` tracks invocation metrics (latency, errors, retries)
+  - Telemetry: OpenTelemetry integration via optional `[otel]` extra
+
+### Changed
+- `Protocol` enum now uses `StrEnum` (Python 3.11+) instead of `(str, Enum)`
+- `AgentRecord` now has `agent_card` field (populated during discovery enrichment)
+- Discovery enrichment uses typed `fetch_agent_card()` instead of raw dict parsing
+- Development status upgraded to "Beta" in package classifiers
+
+### Dependencies
+- New optional `[jws]` extra: `cryptography>=41.0.0`
+- New optional `[otel]` extra: `opentelemetry-api>=1.20.0`, `opentelemetry-sdk>=1.20.0`
+- New optional `[sdk]` extra: (no additional deps, uses core httpx)
+
 ## [0.4.9] - 2026-02-02
 
 ### Fixed
