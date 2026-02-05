@@ -158,7 +158,6 @@ class HttpIndexError(Exception):
     """Error fetching or parsing HTTP index."""
 
 
-
 async def fetch_http_index(
     domain: str,
     timeout: float = DEFAULT_TIMEOUT,
