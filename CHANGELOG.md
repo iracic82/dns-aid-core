@@ -5,6 +5,18 @@ All notable changes to DNS-AID will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-02-05
+
+### Fixed
+- **Security scan compliance** — Replaced AWS example key patterns in tests for Wiz/SonarQube compatibility
+- **Code quality** — Removed unused imports flagged by static analysis
+
+### Added
+- **Dependabot** — Automated dependency updates for pip and GitHub Actions
+- **Pre-commit hooks** — Ruff linting/formatting + MyPy type checking on commit
+- **Makefile** — Standard development commands (`make test`, `make lint`, etc.)
+- **requirements.lock** — Reproducible builds with pinned dependencies
+
 ## [0.5.0] - 2026-02-05
 
 ### Added
