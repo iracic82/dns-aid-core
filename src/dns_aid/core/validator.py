@@ -190,9 +190,7 @@ async def _check_dnssec(fqdn: str) -> bool:
     return False
 
 
-async def _check_dane(
-    target: str, port: int, *, verify_cert: bool = False
-) -> bool | None:
+async def _check_dane(target: str, port: int, *, verify_cert: bool = False) -> bool | None:
     """
     Check DANE/TLSA record for the endpoint.
 

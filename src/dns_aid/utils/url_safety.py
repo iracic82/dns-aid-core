@@ -44,9 +44,7 @@ def validate_fetch_url(url: str) -> str:
 
     # Enforce HTTPS
     if parsed.scheme != "https":
-        raise UnsafeURLError(
-            f"Only HTTPS URLs are allowed, got scheme '{parsed.scheme}': {url}"
-        )
+        raise UnsafeURLError(f"Only HTTPS URLs are allowed, got scheme '{parsed.scheme}': {url}")
 
     hostname = parsed.hostname
     if not hostname:

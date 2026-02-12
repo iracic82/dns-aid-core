@@ -355,9 +355,7 @@ class TestSecurityScoring:
         dns_bridge.set_endpoint_reachable("mcp.example.com")
 
         with dns_bridge.patch_all():
-            verify = await dns_aid.verify(
-                "_secure._mcp._agents.example.com"
-            )
+            verify = await dns_aid.verify("_secure._mcp._agents.example.com")
             assert verify.record_exists
             assert verify.svcb_valid
             assert verify.dnssec_valid
@@ -382,9 +380,7 @@ class TestSecurityScoring:
         )
 
         with dns_bridge.patch_all():
-            verify = await dns_aid.verify(
-                "_basic._mcp._agents.example.com"
-            )
+            verify = await dns_aid.verify("_basic._mcp._agents.example.com")
             assert verify.record_exists
             assert verify.svcb_valid
             assert not verify.dnssec_valid
@@ -399,9 +395,7 @@ class TestSecurityScoring:
     ):
         """Agent doesn't exist → score 0."""
         with dns_bridge.patch_all():
-            verify = await dns_aid.verify(
-                "_ghost._mcp._agents.example.com"
-            )
+            verify = await dns_aid.verify("_ghost._mcp._agents.example.com")
             assert not verify.record_exists
             assert verify.security_score == 0
 
@@ -615,9 +609,7 @@ class TestDANECertMatching:
         dns_bridge.set_endpoint_reachable("mcp.example.com")
 
         with dns_bridge.patch_all():
-            verify = await dns_aid.verify(
-                "_dane-test._mcp._agents.example.com"
-            )
+            verify = await dns_aid.verify("_dane-test._mcp._agents.example.com")
             assert verify.record_exists
             assert verify.svcb_valid
             assert verify.dane_valid is True

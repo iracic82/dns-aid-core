@@ -152,8 +152,6 @@ class AgentClient:
             signal=signal,
         )
 
-
-
     @staticmethod
     def _push_signal_http_sync(signal: InvocationSignal, push_url: str) -> None:
         """POST a signal to the telemetry API. Runs in a daemon thread, fire-and-forget."""

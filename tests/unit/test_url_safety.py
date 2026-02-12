@@ -107,9 +107,7 @@ class TestCapSha256Verification:
 
         content = b'{"capabilities": ["test"]}'
         expected_hash = (
-            base64.urlsafe_b64encode(hashlib.sha256(content).digest())
-            .rstrip(b"=")
-            .decode("ascii")
+            base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode("ascii")
         )
 
         mock_response = AsyncMock(spec=httpx.Response)

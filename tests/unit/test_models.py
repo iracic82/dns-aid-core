@@ -38,8 +38,12 @@ class TestAgentRecord:
     def test_endpoint_source_all_values(self):
         """Test all endpoint_source Literal values are accepted."""
         valid_sources = [
-            "dns_svcb", "dns_svcb_enriched", "http_index",
-            "http_index_fallback", "direct", "directory",
+            "dns_svcb",
+            "dns_svcb_enriched",
+            "http_index",
+            "http_index_fallback",
+            "direct",
+            "directory",
         ]
         for source in valid_sources:
             agent = AgentRecord(

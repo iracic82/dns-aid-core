@@ -197,8 +197,12 @@ class AgentRecord(BaseModel):
     # Endpoint source - where the endpoint information came from
     endpoint_source: (
         Literal[
-            "dns_svcb", "dns_svcb_enriched", "http_index",
-            "http_index_fallback", "direct", "directory",
+            "dns_svcb",
+            "dns_svcb_enriched",
+            "http_index",
+            "http_index_fallback",
+            "direct",
+            "directory",
         ]
         | None
     ) = Field(
@@ -279,6 +283,7 @@ class AgentRecord(BaseModel):
         # Emit keyNNNNN format by default (RFC 9460 compliant for unregistered keys).
         # Set DNS_AID_SVCB_STRING_KEYS=1 for human-readable string names.
         use_strings = _use_string_keys()
+
         def _key(name: str) -> str:
             return name if use_strings else BANDAID_KEY_MAP.get(name, name)
 

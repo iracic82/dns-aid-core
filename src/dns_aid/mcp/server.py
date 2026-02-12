@@ -142,15 +142,19 @@ def _get_dns_backend(name: str):
 
     if name == "route53":
         from dns_aid.backends.route53 import Route53Backend
+
         return Route53Backend()
     elif name == "cloudflare":
         from dns_aid.backends.cloudflare import CloudflareBackend
+
         return CloudflareBackend()
     elif name == "infoblox":
         from dns_aid.backends.infoblox import InfobloxBackend
+
         return InfobloxBackend()
     elif name == "ddns":
         from dns_aid.backends.ddns import DDNSBackend
+
         return DDNSBackend()
     else:
         return MockBackend()

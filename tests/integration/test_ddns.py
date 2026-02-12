@@ -20,9 +20,7 @@ import pytest
 # Live backend tests — run with: pytest -m live
 pytestmark = [
     pytest.mark.live,
-    pytest.mark.skipif(
-        not os.environ.get("DDNS_TEST_ENABLED"), reason="DDNS_TEST_ENABLED not set"
-    ),
+    pytest.mark.skipif(not os.environ.get("DDNS_TEST_ENABLED"), reason="DDNS_TEST_ENABLED not set"),
 ]
 
 # Test configuration matching bind/named.conf

@@ -111,7 +111,7 @@ class MockDNSBridge:
             # _parse_svcb_custom_params() splits on spaces.
             params = rec.get("params", {})
             parts = [f'{k}="{v}"' for k, v in params.items()]
-            str_repr = f'{rec["priority"]} {target}. {" ".join(parts)}'
+            str_repr = f"{rec['priority']} {target}. {' '.join(parts)}"
             # Use default argument capture to avoid late-binding closure bug
             rdata.__str__ = lambda _self, _s=str_repr: _s
 
@@ -120,9 +120,7 @@ class MockDNSBridge:
         mock_answer = MagicMock()
         mock_answer.__iter__ = lambda _self, _r=mock_rdatas: iter(_r)
         mock_answer.response = MagicMock()
-        mock_answer.response.flags = (
-            dns.flags.AD if zone in self._dnssec_domains else 0
-        )
+        mock_answer.response.flags = dns.flags.AD if zone in self._dnssec_domains else 0
         return mock_answer
 
     def _build_txt_answer(self, zone: str, record_name: str) -> MagicMock | None:
@@ -135,17 +133,14 @@ class MockDNSBridge:
         for rec in records:
             rdata = MagicMock()
             rdata.strings = [
-                v.encode("utf-8") if isinstance(v, str) else v
-                for v in rec.get("values", [])
+                v.encode("utf-8") if isinstance(v, str) else v for v in rec.get("values", [])
             ]
             mock_rdatas.append(rdata)
 
         mock_answer = MagicMock()
         mock_answer.__iter__ = lambda _self, _r=mock_rdatas: iter(_r)
         mock_answer.response = MagicMock()
-        mock_answer.response.flags = (
-            dns.flags.AD if zone in self._dnssec_domains else 0
-        )
+        mock_answer.response.flags = dns.flags.AD if zone in self._dnssec_domains else 0
         return mock_answer
 
     def _build_tlsa_answer(self, fqdn: str) -> MagicMock | None:
@@ -298,9 +293,7 @@ class MockDNSBridge:
         with ExitStack() as stack:
             # DNS resolver — one patch covers all modules since they share
             # the same dns.asyncresolver module object
-            stack.enter_context(
-                patch("dns.asyncresolver.Resolver", return_value=resolver_mock)
-            )
+            stack.enter_context(patch("dns.asyncresolver.Resolver", return_value=resolver_mock))
             # HTTP clients — patch each consumer module
             for mod in (
                 "dns_aid.core.cap_fetcher",
@@ -308,9 +301,7 @@ class MockDNSBridge:
                 "dns_aid.core.validator",
                 "dns_aid.core.http_index",
             ):
-                stack.enter_context(
-                    patch(f"{mod}.httpx.AsyncClient", return_value=http_mock)
-                )
+                stack.enter_context(patch(f"{mod}.httpx.AsyncClient", return_value=http_mock))
             # SSRF bypass — validate_fetch_url is lazy-imported inside
             # cap_fetcher and a2a_card, so patching at the module level works
             stack.enter_context(

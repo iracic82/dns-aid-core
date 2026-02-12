@@ -56,8 +56,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/.well-known/agent-cap.json")
 
         assert doc is not None
@@ -79,8 +81,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/.well-known/agent-cap.json")
 
         assert doc is None
@@ -96,8 +100,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/.well-known/agent-cap.json")
 
         assert doc is None
@@ -110,8 +116,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/.well-known/agent-cap.json")
 
         assert doc is None
@@ -124,8 +132,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://unreachable.example.com/cap.json")
 
         assert doc is None
@@ -142,8 +152,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/bad.json")
 
         assert doc is None
@@ -160,8 +172,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/array.json")
 
         assert doc is None
@@ -181,8 +195,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/cap.json")
 
         assert doc is not None
@@ -204,8 +220,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/cap.json")
 
         assert doc is not None
@@ -233,8 +251,10 @@ class TestFetchCapDocument:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u), \
-             patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("dns_aid.utils.url_safety.validate_fetch_url", side_effect=lambda u: u),
+            patch("dns_aid.core.cap_fetcher.httpx.AsyncClient", return_value=mock_client),
+        ):
             doc = await fetch_cap_document("https://example.com/cap.json")
 
         assert doc is not None
