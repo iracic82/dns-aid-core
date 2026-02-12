@@ -659,9 +659,12 @@ asyncio.run(main())
 ```
 
 
-## Kubernetes Controller (v0.7.0+)
+## Kubernetes Controller (Planned)
 
-The Python Kubernetes Controller auto-publishes agents based on Service/Ingress annotations. Uses idempotent reconciliation for reliable GitOps workflows.
+> **Status: Planned** — The Kubernetes controller is not yet implemented in dns-aid-core.
+> The examples below document the intended usage for a future release.
+
+The Python Kubernetes Controller will auto-publish agents based on Service/Ingress annotations, using idempotent reconciliation for reliable GitOps workflows.
 
 ### Quick Start
 
@@ -724,7 +727,7 @@ The controller uses the `apply()` idempotent reconciliation pattern — all life
 
 ---
 
-## JWS Signatures (v0.7.0+)
+## JWS Signatures (v0.5.0+)
 
 JWS (JSON Web Signature) provides application-layer verification when DNSSEC isn't available (~70% of domains). Signatures are embedded in SVCB records and verified against a JWKS published at `.well-known/dns-aid-jwks.json`.
 
