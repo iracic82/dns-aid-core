@@ -2,7 +2,7 @@
 
 This guide will walk you through installing, configuring, and testing DNS-AID.
 
-> **Version 0.7.0** - Adds Python Kubernetes Controller for auto-publishing agents and JWS signatures for application-layer verification when DNSSEC isn't available. Plus v0.6.0 features: `fetch_rankings()` for community-wide telemetry rankings, LangGraph Studio integration, and competitive agent selection based on cost + reliability.
+> **Version 0.6.0** - Adds DNSSEC enforcement (`require_dnssec=True`), DANE full certificate matching (`verify_dane_cert=True`), Sigstore release signing, Route53/Cloudflare SVCB custom param demotion to TXT, and environment variable documentation.
 
 ## Prerequisites
 
