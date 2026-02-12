@@ -1,5 +1,6 @@
 """Unit tests for CLI commands."""
 
+import re
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -7,6 +8,13 @@ from typer.testing import CliRunner
 from dns_aid.cli.main import app
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    """Strip ANSI escape codes from Rich/Typer output for reliable assertions."""
+    return _ANSI_RE.sub("", text)
 
 
 class TestVersion:
@@ -181,15 +189,17 @@ class TestPublishOptions:
     def test_publish_help_shows_transport(self, mock_run_async):
         result = runner.invoke(app, ["publish", "--help"])
         assert result.exit_code == 0
-        assert "--transport" in result.output
-        assert "streamable-http" in result.output
+        plain = _strip_ansi(result.output)
+        assert "--transport" in plain
+        assert "streamable-http" in plain
 
     @patch("dns_aid.cli.main.run_async")
     def test_publish_help_shows_auth_type(self, mock_run_async):
         result = runner.invoke(app, ["publish", "--help"])
         assert result.exit_code == 0
-        assert "--auth-type" in result.output
-        assert "api_key" in result.output
+        plain = _strip_ansi(result.output)
+        assert "--auth-type" in plain
+        assert "api_key" in plain
 
 
 class TestRunAsync:

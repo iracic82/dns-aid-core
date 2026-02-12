@@ -142,6 +142,10 @@ ignore = ["E501", "SIM108"]  # SIM108: if-else vs ternary is a style preference
 # Tests often use nested with statements for mocking and uppercase mock variable names
 "tests/**/*.py" = ["SIM117", "N806"]
 
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv", "build", "dist"]
+skips = ["B101", "B110"]
+
 [tool.coverage.run]
 source = ["src/dns_aid"]
 branch = true
