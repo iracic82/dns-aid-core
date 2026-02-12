@@ -174,6 +174,24 @@ class TestQuietMode:
         assert "dns-aid version" in result.output
 
 
+class TestPublishOptions:
+    """Test publish command options including --transport and --auth-type."""
+
+    @patch("dns_aid.cli.main.run_async")
+    def test_publish_help_shows_transport(self, mock_run_async):
+        result = runner.invoke(app, ["publish", "--help"])
+        assert result.exit_code == 0
+        assert "--transport" in result.output
+        assert "streamable-http" in result.output
+
+    @patch("dns_aid.cli.main.run_async")
+    def test_publish_help_shows_auth_type(self, mock_run_async):
+        result = runner.invoke(app, ["publish", "--help"])
+        assert result.exit_code == 0
+        assert "--auth-type" in result.output
+        assert "api_key" in result.output
+
+
 class TestRunAsync:
     """Test run_async helper."""
 
